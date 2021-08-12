@@ -1,0 +1,34 @@
+@slnetcdf.lis
+@configure 0755
+@COPYING
+@README
+@INSTALL.txt
+@changes.txt
+
+@demo/translate 0755
+
+@autoconf/Makefile.in
+@autoconf/aclocal.m4
+@autoconf/config.guess 0755
+@autoconf/config.sub 0755
+@autoconf/configure.ac
+@autoconf/install-sh 0755
+@autoconf/mkinsdir.sh 0755
+
+@src/config.hin
+@src/Makefile.in
+@src/version.h
+@src/netcdf.sl
+@src/netcdf-module.c
+@src/mkversion.sh 0755
+
+@doc/tm/Makefile
+@doc/tm/fixtex.sl
+@doc/tm/netcdf.tm
+@doc/tm/netcdffuns.tm
+@doc/tm/local.tm
+@doc/tm/helpfile.tm
+@doc/text/netcdf.txt
+@doc/help/netcdf.hlp
+
+#@src/tests/test_netcdf.sl
