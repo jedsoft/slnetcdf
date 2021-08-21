@@ -1,5 +1,5 @@
 dnl -*- sh -*-
-AC_INIT(src/template-module.c)
+AC_INIT(src/netcdf-module.c)
 AC_PREFIX_DEFAULT(/usr/local)
 
 AC_CONFIG_AUX_DIR(autoconf)
@@ -18,7 +18,7 @@ AC_PATH_XTRA
 JD_WITH_LIBRARY(slang)
 
 dnl# Add libraries here
-JD_WITH_LIBRARY(template,template/template.h)
+JD_WITH_LIBRARY(netcdf,netcdf.h)
 
 dnl# This macro inits the module installation dir
 JD_SLANG_MODULE_INSTALL_DIR

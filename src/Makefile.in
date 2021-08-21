@@ -3,9 +3,9 @@
 #---------------------------------------------------------------------------
 # List of modules and associated .sl files to install
 #---------------------------------------------------------------------------
-MODULES = template-module.so
-SL_FILES = template.sl
-HLP_FILES = ../doc/help/template.hlp
+MODULES = netcdf-module.so
+SL_FILES = netcdf.sl
+HLP_FILES = ../doc/help/netcdf.hlp
 MODULE_VERSION	= `./mkversion.sh`
 
 #---------------------------------------------------------------------------
@@ -32,10 +32,10 @@ SLANG_LIB	= @SLANG_LIB@ -lslang
 #---------------------------------------------------------------------------
 # Additional Libraries required by the module
 #---------------------------------------------------------------------------
-TEMPLATE_INC	= @TEMPLATE_INC@
-TEMPLATE_LIB	= @TEMPLATE_LIB@ -ltemplate
+NETCDF_INC	= @NETCDF_INC@
+NETCDF_LIB	= @NETCDF_LIB@ -lnetcdf
 X_XTRA_LIBS	= @X_EXTRA_LIBS@
-MODULE_LIBS	= $(TEMPLATE_LIB) # $(X_LIBS) $(X_XTRA_LIBS)
+MODULE_LIBS	= $(NETCDF_LIB) # $(X_LIBS) $(X_XTRA_LIBS)
 RPATH		= @RPATH@
 
 #---------------------------------------------------------------------------
@@ -54,16 +54,22 @@ DEST_MODULE_INSTALL_DIR = $(DESTDIR)$(MODULE_INSTALL_DIR)
 DEST_SL_FILES_INSTALL_DIR = $(DESTDIR)$(SL_FILES_INSTALL_DIR)
 DEST_HLP_FILES_INSTALL_DIR = $(DESTDIR)$(HLP_FILES_INSTALL_DIR)
 #---------------------------------------------------------------------------
+UPDATE_VERSION_SCRIPT = $(HOME)/bin/update_changes_version
+#---------------------------------------------------------------------------
 LIBS = $(SLANG_LIB) $(MODULE_LIBS) $(RPATH) $(DL_LIB) -lm
-INCS = $(SLANG_INC) $(TEMPLATE_INC)
+INCS = $(SLANG_INC) $(NETCDF_INC)
 
 all: $(MODULES)
 
 #---------------------------------------------------------------------------
 # Put Rules to create the modules here
 #---------------------------------------------------------------------------
-template-module.so: template-module.c
-	$(CC_SHARED) $(INCS) template-module.c -o template-module.so $(LIBS)
+netcdf-module.so: netcdf-module.c version.h
+	$(CC_SHARED) $(INCS) netcdf-module.c -o netcdf-module.so $(LIBS)
+version.h: ../changes.txt
+	if [ -x $(UPDATE_VERSION_SCRIPT) ]; then \
+	  $(UPDATE_VERSION_SCRIPT) ../changes.txt ./version.h; \
+	fi
 #---------------------------------------------------------------------------
 # Regression tests
 #---------------------------------------------------------------------------
