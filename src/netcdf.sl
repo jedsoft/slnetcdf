@@ -14,7 +14,7 @@ private define get_varid (ncobj, varname)
 {
    try
      {
-	return ncobj.varids[varname];
+	return ncobj.group_info.varids[varname];
      }
    catch AnyError;
 
@@ -36,7 +36,8 @@ private define netcdf_put ()
    else usage ("ncobj.nc_put (varname, data, [start, [count [,stride]]])");
 
    variable varid = get_varid (ncobj, varname);
-   variable shape = _nc_inq_varshape (ncobj.ncid, varid);
+   variable ncid = ncobj.group_info.ncid;
+   variable shape = _nc_inq_varshape (ncid, varid);
    variable ndims = length (shape);
    if (start == NULL) start = ULong_Type[ndims];
    if (count == NULL)
@@ -54,10 +55,7 @@ private define netcdf_put ()
      }
    if (stride == NULL) stride = Long_Type[ndims]+1;
 
-   ifnot (assoc_key_exists (ncobj.varids, varname))
-     throw InvalidParmError, "Variable name `$varname' does not exist or has not been defined"$;
-
-   _nc_put_vars (start, count, stride, data, ncobj.ncid, varid);
+   _nc_put_vars (start, count, stride, data, ncid, varid);
 }
 
 private define netcdf_get ()
@@ -76,7 +74,9 @@ private define netcdf_get ()
    else usage ("ncobj.nc_get (varname, [start, [count [,stride]]])");
 
    variable varid = get_varid (ncobj, varname);
-   variable shape = _nc_inq_varshape (ncobj.ncid, varid);
+   variable group_info = ncobj.group_info;
+   variable ncid = group_info.ncid;
+   variable shape = _nc_inq_varshape (ncid, varid);
    variable ndims = length (shape);
    if (start == NULL)
      start = ULong_Type[ndims];
@@ -95,16 +95,17 @@ private define netcdf_get ()
      }
    if (stride == NULL) stride = Long_Type[ndims]+1;
 
-   ifnot (assoc_key_exists (ncobj.varids, varname))
+   ifnot (assoc_key_exists (group_info.varids, varname))
      throw InvalidParmError, "Variable name `$varname' does not exist or has not been defined"$;
 
-   variable data = _nc_get_vars (start, count, stride, ncobj.ncid, varid);
+   variable data = _nc_get_vars (start, count, stride, ncid, varid);
    if (is_scalar && (length (data) == 1))
      return data[[0]];
 
    return data;
 }
 
+private define create_group_instance ();   %  forward decl
 private define netcdf_def_dim ()
 {
    variable ncobj, name, val;
@@ -113,16 +114,25 @@ private define netcdf_def_dim ()
      usage ("ncobj.def_dim (name, len | array-of-grid-points)");
 
    (ncobj, name, val) = ();
-   if (assoc_key_exists (ncobj.dimids, name))
+
+   if (ncobj.group_info.group_name != "/")
+     throw UsageError, "The ncobj.def_dim method may only be called from the root group object";
+
+   variable shared_info = ncobj.shared_info;
+   variable dimids = shared_info.dimids;
+   variable ncid = shared_info.root_ncid;
+   if (assoc_key_exists (dimids, name))
      throw InvalidParmError, "Dimension name `$name' has already exists"$, name;
+
    if (typeof (val) != Array_Type)
      {
-	ncobj.dimids[name] = _nc_def_dim (ncobj.ncid, name, val);
+	dimids[name] = _nc_def_dim (ncid, name, val);
 	return;
      }
    % Otherwise it is a coordinate dimension
    variable len = length (val);
-   ncobj.dimids[name] = _nc_def_dim (ncobj.ncid, name, len);
+   dimids[name] = _nc_def_dim (ncid, name, len);
+
    ncobj.def_var (name, _typeof(val), [name]);
    ncobj.put (name, val);
 }
@@ -135,20 +145,24 @@ private define netcdf_def_var ()
      usage ("ncobj.def_var (name, type, array-of-dim-names])");
 
    (ncobj, name, type, dims) = ();
-   if (assoc_key_exists (ncobj.varids, name))
+
+   variable group_info = ncobj.group_info;
+   variable varids = group_info.varids;
+   if (assoc_key_exists (varids, name))
      throw InvalidParmError, "Variable name `$name' already exists"$, name;
 
    variable ndims = length(dims);
    variable dimids = NetCDF_Dim_Type[ndims];
+   variable shared_dimids = ncobj.shared_info.dimids;
    _for (0, ndims-1, 1)
      {
 	variable i = ();
 	variable dim_i = dims[i];
-	ifnot (assoc_key_exists (ncobj.dimids, dim_i))
+	ifnot (assoc_key_exists (shared_dimids, dim_i))
 	  throw InvalidParmError, "Dimension name `${dim_i}' does not exist"$;
-	dimids[i] = ncobj.dimids[dim_i];
+	dimids[i] = shared_dimids[dim_i];
      }
-   ncobj.varids[name] = _nc_def_var (ncobj.ncid, name, type, dimids);
+   varids[name] = _nc_def_var (group_info.ncid, name, type, dimids);
 }
 
 private define netcdf_put_att ()
@@ -161,11 +175,12 @@ private define netcdf_put_att ()
    else
      usage ("ncobj.put_att([varname,] attname, value);");
 
+   variable ncid = ncobj.group_info.ncid;
    if (varname == NULL)
-     return _nc_put_global_att (value, ncobj.ncid, attname);
+     return _nc_put_global_att (value, ncid, attname);
 
    variable varid = get_varid (ncobj, varname);
-   _nc_put_att (value, ncobj.ncid, varid, attname);
+   _nc_put_att (value, ncid, varid, attname);
 }
 
 private define netcdf_get_att ()
@@ -178,46 +193,147 @@ private define netcdf_get_att ()
    else
      usage ("value = ncobj.get_att([varname,] attname)");
 
+   variable ncid = ncobj.group_info.ncid;
    if (varname == NULL)
-     return _nc_get_global_att (ncobj.ncid, attname);
+     return _nc_get_global_att (ncid, attname);
 
    variable varid = get_varid (ncobj, varname);
-   _nc_get_att (ncobj.ncid, varid, attname);
+   return _nc_get_att (ncid, varid, attname);
 }
 
 private define netcdf_close (ncobj)
 {
-   _nc_close (ncobj.ncid);
-   ncobj.ncid = NULL;
-   ncobj.dimids = NULL;
-   ncobj.varids = NULL;                             %  assoc array
-   ncobj.group_name = NULL;
-   ncobj.subgroups = NULL;
+   variable ncid = ncobj.shared_info.root_ncid;
+   if (ncid == NULL) return;
+   _nc_close (ncid);
+   ncobj.shared_info.root_ncid = NULL;
+   ncobj.shared_info = NULL;
+   ncobj.group_info = NULL;
 }
 
-private define open_existing (ncobj, file, flags)
+private define netcdf_info ()
 {
-   variable ncid = _nc_open (file, flags);
-   ncobj.ncid = ncid;
+   if (_NARGS != 1)
+     usage ("ncobj.info()");
+
+   variable ncobj = ();
+   variable shared_info = ncobj.shared_info, group_info = ncobj.group_info;
+   variable ncid = group_info.ncid;
+
+   variable name, id, i, n, names;     %  generic vars used below
+
+   variable str = "";
+   str = str + sprintf ("group-name: %S\n", group_info.group_name);
+   str = str + "dimensions:\n";
+
+   variable dimids = shared_info.dimids;
+   foreach id (dimids) using ("values")
+     {
+	variable len, is_unlimited;
+	(name, len, is_unlimited) = _nc_inq_dim (ncid, id);
+	if (is_unlimited)
+	  str = str + sprintf ("\t%S = UNLIMITED; // %S currently\n", name, len);
+	else
+	  str = str + sprintf ("\t%S = %S;\n", name, len);
+     }
+
+   str = str + "variables:\n";
+   foreach id (group_info.varids) using ("values")
+     {
+	variable type, vardims;
+	(name, type, vardims) = _nc_inq_var (ncid, id);
+
+	n = length (vardims);
+	names = String_Type[n];
+	_for i (0, n-1, 1)
+	  {
+	     (names[i],,) = _nc_inq_dim (ncid, vardims[i]);
+	  }
+
+	str = str + sprintf ("\t%S %S(%S);\n", type, name, strjoin(names, ", "));
+     }
+
+   () = fputs (str, stdout);
+}
+
+private variable Netcdf_Group_Type = struct
+{
+   ncid,
+   varids,
+   group_name,
+   subgroups_names,
+};
+
+private variable Netcdf_Shared_Type = struct
+{
+   root_ncid,			       %  ncdid of the root groupd
+   dimids,			       %  dimids are global to all groups
+   groups,			       %  assoc array of Netcdf_Group_Type  
+};
+
+private define netcdf_def_grp ();      %  forward decl
+private define netcdf_group ();      %  forward decl
+
+private variable Netcdf_Obj = struct
+{
+   group_info,			       %  poiner to Netcdf_Group_Type
+   shared_info,			       %  pointer to Netcdf_Shared_Type
+   get = &netcdf_get,
+   put = &netcdf_put,
+   def_dim = &netcdf_def_dim,
+   def_var = &netcdf_def_var,
+   put_att = &netcdf_put_att,
+   get_att = &netcdf_get_att,
+   def_grp = &netcdf_def_grp,
+   group = &netcdf_group,
+   info = &netcdf_info,
+   close = &netcdf_close,
+};
+
+% This function returns a group instance of a group that already exists
+private define create_group_instance (shared_info, group_name)
+{
+   variable ncobj = @Netcdf_Obj;
+   ncobj.shared_info = shared_info;
+   ncobj.group_info = shared_info.groups[group_name];
+   return ncobj;
+}
+
+private define create_new_group_instance (shared_info, ncid, group_name)
+{
+   variable ncobj = @Netcdf_Obj;
+   ncobj.shared_info = shared_info;
+
+   variable group_info = @Netcdf_Group_Type;
+   group_info.group_name = group_name;
+   group_info.ncid = ncid;
+   group_info.varids = Assoc_Type[NetCDF_Var_Type];
+   ncobj.group_info = group_info;
+   shared_info.groups[group_name] = group_info;
 
    % Now read the dimensions, variables, and attributes
    variable dims, vars, attrs, dimid, varid;
 
-   (dims, vars) = _nc_inq (ncobj.ncid);
+   (dims, vars) = _nc_inq (ncid);
 
+   variable ids = shared_info.dimids;
    foreach dimid (dims)
      {
 	variable dim_name;
-	(dim_name,) = _nc_inq_dim (ncid, dimid);
-	ncobj.dimids[dim_name] = dimid;
+	(dim_name,,) = _nc_inq_dim (ncid, dimid);
+	ids[dim_name] = dimid;
      }
 
+   ids = group_info.varids;
    foreach varid (vars)
      {
 	variable var_name = _nc_inq_varname (ncid, varid);
-	ncobj.varids[var_name] = varid;
+	ids[var_name] = varid;
      }
+
+   return ncobj;
 }
+
 
 private define make_canonical_group_name (path)
 {
@@ -240,42 +356,89 @@ private define make_canonical_group_name (path)
    return "/" + strjoin (list_to_array(new_components), "/");
 }
 
+private define find_group (ncobj, name, def_grp_ok)
+{
+   variable shared_info = ncobj.shared_info;
+   variable group_info = ncobj.group_info;
+
+   variable new_group_name = path_concat (group_info.group_name, name);
+   new_group_name = make_canonical_group_name (new_group_name);
+
+   % Find an ancestor that exists
+   variable groups = shared_info.groups;
+   variable ancestor_name = new_group_name;
+   forever
+     {
+	ancestor_name = path_dirname (ancestor_name);
+	if (assoc_key_exists (groups, ancestor_name))
+	  break;
+	if (ancestor_name == "/")
+	  throw UnknownError, "Unable to find a common group ancestor";
+     }
+
+   % Change the ncobj to an instantiation of the ancestor
+   % Create the intermediate groups
+   if (ancestor_name != group_info.group_name)
+     ncobj = create_group_instance (shared_info, ancestor_name);
+
+   variable decendents = strtok (new_group_name, "/");
+   decendents = decendents[[length(strtok(ancestor_name, "/")):]];
+
+   foreach (decendents)
+     {
+	variable child_name = ();
+	variable ncid = ncobj.group_info.ncid;
+	variable child_ncid = NULL;
+	try
+	  {
+	     if (def_grp_ok)
+	       child_ncid = _nc_def_grp (ncid, child_name);
+	  }
+	catch AnyError;
+
+	if (child_ncid == NULL)
+	  {
+	     % Failed to create it, maybe it already exists in the file.
+	     child_ncid = _nc_inq_grp_ncid (ncid, child_name);
+	  }
+
+	ancestor_name = path_concat (ancestor_name, child_name);
+	ncobj = create_new_group_instance (shared_info, child_ncid, ancestor_name);
+     }
+
+   return ncobj;
+}
+
 private define netcdf_def_grp ()
 {
-   throw NotImplementedError, ".def_grp has not been implemented";
    if (_NARGS != 2)
-     usage ("ncobj.def_grp (group_name)");
+     usage ("ncgrp = ncobj.def_grp (group_name)");
    variable ncobj, name;
    (ncobj, name) = ();
-
-   variable group_name = path_concat (ncobj.group_name, name);
-   group_name = make_canonical_group_name (group_name);
-   if (group_name == "/")
-     {
-     }
+   return find_group (ncobj, name, 1);
 }
 
-private define open_new (ncobj, file, flags)
+private define netcdf_group ()
 {
-   ncobj.ncid = _nc_create (file, flags);
+   if (_NARGS != 2)
+     usage ("ncgrp = ncobj.group (group_name)");
+   variable ncobj, name;
+   (ncobj, name) = ();
+   return find_group (ncobj, name, 0);
 }
 
-private variable Netcdf_Obj = struct
+
+
+% shared_info is passed to capture additional metadata if needed
+private define open_existing (file, flags, shared_info)
 {
-   ncid,			       %  file or group
-   dimids,			       %  assoc array
-   varids,			       %  assoc array
-   group_name,
-   subgroups,
-   get = &netcdf_get,
-   put = &netcdf_put,
-   def_dim = &netcdf_def_dim,
-   def_var = &netcdf_def_var,
-   put_att = &netcdf_put_att,
-   get_att = &netcdf_get_att,
-   def_grp = &netcdf_def_grp,
-   close = &netcdf_close,
-};
+   return _nc_open (file, flags);
+}
+
+private define open_new (file, flags, shared_info)
+{
+   return _nc_create (file, flags);
+}
 
 define netcdf_open ()
 {
@@ -318,10 +481,12 @@ Qualifiers:\n\
    if (qualifier_exists ("share")) flags |= NC_SHARE;
    if (qualifier_exists ("lock")) flags |= NC_LOCK;
 
-   variable obj = @Netcdf_Obj;
-   obj.dimids = Assoc_Type[NetCDF_Dim_Type];
-   obj.varids = Assoc_Type[NetCDF_Var_Type];
-   (@open_func)(obj, file, flags);
+   variable shared_info = @Netcdf_Shared_Type;
+   variable ncid = (@open_func)(file, flags, shared_info);
 
-   return obj;
+   shared_info.dimids = Assoc_Type[NetCDF_Dim_Type];
+   shared_info.groups = Assoc_Type[Struct_Type];
+   shared_info.root_ncid = ncid;
+
+   return create_new_group_instance (shared_info, ncid, "/");
 }

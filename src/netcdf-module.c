@@ -46,7 +46,7 @@ SLANG_MODULE(netcdf);
 static int NCid_Dim_Type_Id = 0;
 typedef struct
 {
-   SLindex_Type dim_size;
+   SLindex_Type dim_size;	       /* 0 if unlimited */
    int ncid;
    int dim_id;
    unsigned int numrefs;
@@ -77,9 +77,11 @@ typedef struct
 NCid_Type;
 
 static int sl_NC_Error;
+static int NC_Errno;
 
 static void throw_nc_error (const char *name, int err)
 {
+   NC_Errno = err;
    SLang_verror (sl_NC_Error, "%s returned error code %d: %s", name, err, nc_strerror(err));
 }
 
@@ -238,6 +240,26 @@ static int push_ncid_type (NCid_Type *nc)
    return -1;
 }
 
+/* Push an NCid_Type with descriptor ncid.  If a failure occurs, and
+ * the descriptor is not a group, then it will be closed.
+ */
+static int push_ncid (int ncid, int is_group)
+{
+   NCid_Type *nc;
+   int status;
+
+   if (NULL == (nc = alloc_ncid_type (ncid, is_group)))
+     {
+	if (is_group == 0)
+	  (void) nc_close (ncid);
+	return -1;
+     }
+
+   status = push_ncid_type (nc);
+   free_ncid_type (nc);
+   return status;
+}
+
 static int map_sltype_to_xtype (SLtype s, nc_type *xp)
 {
    switch (s)
@@ -304,7 +326,6 @@ static int map_xtype_to_sltype (nc_type x, SLtype *sp)
 
 static void sl_nc_create (const char *file, int *cmodep)
 {
-   NCid_Type *nc;
    int status;
    int ncid;
 
@@ -314,19 +335,11 @@ static void sl_nc_create (const char *file, int *cmodep)
 	throw_nc_error ("nc_create", status);
 	return;
      }
-   if (NULL == (nc = alloc_ncid_type (ncid, 0)))
-     {
-	(void) nc_close (ncid);
-	return;
-     }
-
-   (void) push_ncid_type (nc);
-   free_ncid_type (nc);
+   (void) push_ncid (ncid, 0);
 }
 
 static void sl_nc_open (const char *file, int *modep)
 {
-   NCid_Type *nc;
    int status;
    int ncid;
 
@@ -336,14 +349,7 @@ static void sl_nc_open (const char *file, int *modep)
 	throw_nc_error ("nc_open", status);
 	return;
      }
-   if (NULL == (nc = alloc_ncid_type (ncid, 0)))
-     {
-	(void) nc_close (ncid);
-	return;
-     }
-
-   (void) push_ncid_type (nc);
-   free_ncid_type (nc);
+   (void) push_ncid (ncid, 0);
 }
 
 static void sl_nc_redef (NCid_Type *nc)
@@ -827,17 +833,62 @@ static NCid_Dim_Type *inq_and_create_dim (int ncid, int dimid, int *unlim_dims, 
    return alloc_ncid_dim_type (ncid, dimid, len);
 }
 
-static SLang_Array_Type *get_at_ncdims (int ncid, SLindex_Type max_dim_id)
+/* You would think that nc_inq_grp_full_ncid(ncid, "/", &root_ncid)
+ * would suffice.  But,....no.
+ */
+static int get_root_ncid (NCid_Type *nc, int *ncidp)
+{
+   int ncid = nc->ncid;
+   if (0 == nc->is_group)
+     {
+	*ncidp = ncid;
+	return 0;
+     }
+
+   while (1)
+     {
+	int status, root;
+	status = nc_inq_grp_parent (ncid, &root);
+	if (status == NC_ENOGRP)
+	  break;
+	if (status != NC_NOERR)
+	  {
+	     throw_nc_error ("nc_inq_grp_parent", status);
+	     return -1;
+	  }
+	if (root == ncid) break;
+	ncid = root;
+     }
+   *ncidp = ncid;
+   return 0;
+}
+
+static SLang_Array_Type *get_at_ncdims (NCid_Type *nc)
 {
    SLang_Array_Type *at_ncdims;
    NCid_Dim_Type **ncdims;
    int *unlim_dims;
-   int dim_id, num_unlim;
+   SLindex_Type ndims;
+   int ncid, dim_id, num_unlim, max_dim_id;
+   int status;
+
+   /* This function requires the root group */
+   if (-1 == get_root_ncid (nc, &ncid))
+     return NULL;
+
+   /* dims are numbered 0 to max_dim_id-1 */
+   status = nc_inq (ncid, &max_dim_id, NULL, NULL, NULL);
+   if (status != NC_NOERR)
+     {
+	throw_nc_error ("nc_inq", status);
+	return NULL;
+     }
 
    if (-1 == get_unlimited_dim_ids (ncid, &unlim_dims, &num_unlim))
      return NULL;
 
-   if (NULL == (at_ncdims = SLang_create_array (NCid_Dim_Type_Id, 0, NULL, &max_dim_id, 1)))
+   ndims = max_dim_id;
+   if (NULL == (at_ncdims = SLang_create_array (NCid_Dim_Type_Id, 0, NULL, &ndims, 1)))
      {
 	SLfree (unlim_dims);
 	return NULL;
@@ -883,10 +934,11 @@ static int *get_var_dimids (int ncid, int varid, SLindex_Type *num_dimsp, nc_typ
    return dimids;
 }
 
-
-static NCid_Var_Type *inq_and_create_var (int ncid, int varid, SLang_Array_Type *all_at_ncdims)
+/* Get a slang array of NCid_Dim_Type objects for the specifid variable.
+ * The objects are copied from the full list of dim objects
+ */
+static SLang_Array_Type *get_var_at_ncdims (int ncid, int varid, SLang_Array_Type *all_at_ncdims, nc_type *xtypep)
 {
-   NCid_Var_Type *ncvar = NULL;
    NCid_Dim_Type **ncdims, **all_ncdims;
    SLang_Array_Type *at_ncdims;
    SLuindex_Type num_all_ncdims;
@@ -924,17 +976,30 @@ static NCid_Var_Type *inq_and_create_var (int ncid, int varid, SLang_Array_Type 
 	  }
 	if (j == num_all_ncdims)
 	  {
-	     SLang_verror (SL_Application_Error, "NETCDF variable #%d has not dimension matching id #%d",
+	     SLang_verror (SL_Application_Error, "NETCDF variable #%d has no dimension matching id #%d",
 			   varid, dim_id_i);
-	     goto free_and_return;
+	     SLang_free_array (at_ncdims);
+	     SLfree (dimids);
+	     return NULL;
 	  }
      }
 
+   SLfree (dimids);
+   *xtypep = xtype;
+   return at_ncdims;
+}
+
+static NCid_Var_Type *inq_and_create_var (int ncid, int varid, SLang_Array_Type *all_at_ncdims)
+{
+   SLang_Array_Type *at_ncdims;
+   NCid_Var_Type *ncvar = NULL;
+   nc_type xtype;
+
+   if (NULL == (at_ncdims = get_var_at_ncdims (ncid, varid, all_at_ncdims, &xtype)))
+     return NULL;
+
    ncvar = alloc_ncid_var_type (varid, xtype, at_ncdims);
-   /* drop */
-free_and_return:
    SLang_free_array (at_ncdims);
-   SLfree (dimids);		       /* NULL ok */
    return ncvar;
 }
 
@@ -1002,7 +1067,7 @@ static void sl_nc_inq (NCid_Type *nc)
 	return;
      }
 
-   if (NULL == (all_at_ncdims = get_at_ncdims (nc->ncid, ndims)))
+   if (NULL == (all_at_ncdims = get_at_ncdims (nc)))
      return;
 
    if (NULL == (at_ncvars = get_at_ncvars (nc->ncid, all_at_ncdims)))
@@ -1014,6 +1079,62 @@ static void sl_nc_inq (NCid_Type *nc)
    (void) SLang_push_array (at_ncvars, 1);
 }
 
+static char *get_varname (int ncid, int varid)
+{
+   char name[NC_MAX_NAME+1];
+   int status;
+
+   status = nc_inq_varname (ncid, varid, name);
+   if (status != NC_NOERR)
+     {
+	throw_nc_error ("_nc_inq_varname", status);
+	return NULL;
+     }
+   name[NC_MAX_NAME] = 0;
+   return SLang_create_slstring (name);
+}
+
+/* usage: (name, type, dimids) = nc_inq_var (nc, ncvar) */
+static void sl_nc_inq_var (NCid_Type *nc, NCid_Var_Type *ncvar)
+{
+   SLang_Array_Type *all_at_ncdims, *at_ncdims;
+   char *name = NULL;
+   int status, ndims, nvars, natts, nunlim;
+   nc_type xtype;
+   SLtype sltype;
+
+   if (-1 == check_ncid_type (nc))
+     return;
+
+   status = nc_inq (nc->ncid, &ndims, &nvars, &natts, &nunlim);
+   if (status != NC_NOERR)
+     {
+	throw_nc_error ("nc_inq", status);
+	return;
+     }
+
+   if (NULL == (all_at_ncdims = get_at_ncdims (nc)))
+     return;
+
+   at_ncdims = get_var_at_ncdims (nc->ncid, ncvar->var_id, all_at_ncdims, &xtype);
+
+   SLang_free_array (all_at_ncdims);
+   if (at_ncdims == NULL) return;
+
+   if ((-1 == map_xtype_to_sltype (xtype, &sltype))
+       || (NULL == (name = get_varname (nc->ncid, ncvar->var_id))))
+     goto free_and_return;
+
+   (void) SLang_push_string (name);
+   (void) SLang_push_datatype (sltype);
+   (void) SLang_push_array (at_ncdims, 0);
+   /* drop */
+free_and_return:
+   SLang_free_slstring (name);
+   SLang_free_array (at_ncdims);
+}
+
+/* usage: (name, len, is_unlimited) = _nc_inq_dim (nc, ncdim) */
 static void sl_nc_inq_dim (NCid_Type *nc, NCid_Dim_Type *ncdim)
 {
    char name[NC_MAX_NAME+1];
@@ -1033,24 +1154,15 @@ static void sl_nc_inq_dim (NCid_Type *nc, NCid_Dim_Type *ncdim)
 
    (void) SLang_push_string (name);
    (void) SLang_push_long_long (len);
+   (void) SLang_push_int (ncdim->dim_size == 0);
 }
 
 static void sl_nc_inq_varname (NCid_Type *nc, NCid_Var_Type *ncvar)
 {
-   char name[NC_MAX_NAME+1];
-   int status;
-
-   if (-1 == check_ncid_type (nc))
-     return;
-
-   status = nc_inq_varname (nc->ncid, ncvar->var_id, name);
-   if (status != NC_NOERR)
-     {
-	throw_nc_error ("_nc_inq_varname", status);
-	return;
-     }
-   name[NC_MAX_NAME] = 0;
+   char *name = get_varname (nc->ncid, ncvar->var_id);
+   if (name == NULL) return;
    (void) SLang_push_string (name);
+   SLang_free_slstring (name);
 }
 
 static void sl_nc_inq_varshape (NCid_Type *nc, NCid_Var_Type *ncvar)
@@ -1297,6 +1409,31 @@ static void sl_nc_get_global_att (NCid_Type *nc, const char *name)
    get_att (nc, NC_GLOBAL, name);
 }
 
+static void sl_nc_def_grp (NCid_Type *nc, const char *name)
+{
+   int grpid;
+   int status = nc_def_grp (nc->ncid, name, &grpid);
+   if (status != NC_NOERR)
+     {
+	throw_nc_error ("nc_def_grp", status);
+	return;
+     }
+   (void) push_ncid (grpid, 1);
+}
+
+static void sl_nc_inq_grp_ncid (NCid_Type *nc, const char *name)
+{
+   int grpid;
+   int status = nc_inq_grp_ncid (nc->ncid, name, &grpid);
+
+   if (status != NC_NOERR)
+     {
+	throw_nc_error ("nc_inq_grp_ncid", status);
+	return;
+     }
+   (void) push_ncid (grpid, 1);
+}
+
 
 #define NCID_DUMMY ((SLtype)-1)
 #define NCID_VAR_DUMMY ((SLtype)-2)
@@ -1324,6 +1461,7 @@ static SLang_Intrin_Fun_Type Module_Intrinsics [] =
 
    MAKE_INTRINSIC_2("_nc_inq_dim", sl_nc_inq_dim, V, NCID_DUMMY, NCID_DIM_DUMMY),
    MAKE_INTRINSIC_1("_nc_inq", sl_nc_inq, V, NCID_DUMMY),
+   MAKE_INTRINSIC_2("_nc_inq_var", sl_nc_inq_var, V, NCID_DUMMY, NCID_VAR_DUMMY),
    MAKE_INTRINSIC_2("_nc_inq_varname", sl_nc_inq_varname, V, NCID_DUMMY, NCID_VAR_DUMMY),
    MAKE_INTRINSIC_2("_nc_inq_varshape", sl_nc_inq_varshape, V, NCID_DUMMY, NCID_VAR_DUMMY),
 
@@ -1331,11 +1469,15 @@ static SLang_Intrin_Fun_Type Module_Intrinsics [] =
    MAKE_INTRINSIC_2("_nc_put_global_att", sl_nc_put_global_att, V, NCID_DUMMY, S),
    MAKE_INTRINSIC_3("_nc_get_att", sl_nc_get_att, V, NCID_DUMMY, NCID_VAR_DUMMY, S),
    MAKE_INTRINSIC_2("_nc_get_global_att", sl_nc_get_global_att, V, NCID_DUMMY, S),
+
+   MAKE_INTRINSIC_2("_nc_def_grp", sl_nc_def_grp, V, NCID_DUMMY, S),
+   MAKE_INTRINSIC_2("_nc_inq_grp_ncid", sl_nc_inq_grp_ncid, V, NCID_DUMMY, S),
    SLANG_END_INTRIN_FUN_TABLE
 };
 
 static SLang_Intrin_Var_Type Module_Variables [] =
 {
+   MAKE_VARIABLE("_nc_errno", &NC_Errno, SLANG_INT_TYPE, 0),
    MAKE_VARIABLE("_netcdf_module_version_string", &Module_Version_String, SLANG_STRING_TYPE, 1),
    SLANG_END_INTRIN_VAR_TABLE
 };

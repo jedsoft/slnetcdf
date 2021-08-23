@@ -11,8 +11,8 @@ clean:
 distclean: clean
 	cd src; $(MAKE) distclean
 	/bin/rm -f config.log config.cache config.status Makefile
-test:
-	cd src; $(MAKE) test
+check:
+	cd src; $(MAKE) check
 install:
 	cd src; $(MAKE) install
 

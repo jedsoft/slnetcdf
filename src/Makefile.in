@@ -74,12 +74,7 @@ version.h: ../changes.txt
 # Regression tests
 #---------------------------------------------------------------------------
 check:
-	@failed=0; \
-        for X in tests/test_*.sl; \
-	do \
-		slsh $$X || failed=1; \
-	done; \
-        exit $$failed
+	./tests/runtests.sh tests/test_*.sl
 #---------------------------------------------------------------------------
 # Installation Rules
 #---------------------------------------------------------------------------
@@ -113,7 +108,7 @@ install_slfiles:
 	done
 
 install_hlpfiles:
-	@for X in $(HLP_FILES); \
+	-@for X in $(HLP_FILES); \
 	do \
 		echo $(INSTALL_DATA) $$X $(DEST_HLP_FILES_INSTALL_DIR); \
 		$(INSTALL_DATA) $$X $(DEST_HLP_FILES_INSTALL_DIR); \
