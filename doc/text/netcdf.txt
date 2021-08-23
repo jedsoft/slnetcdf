@@ -1,0 +1,96 @@
+  S-Lang netCDF Module Reference
+  John E. Davis, jed@jedsoft.org
+  Aug 23, 2021
+  ____________________________________________________________
+
+  Table of Contents
+
+
+  1. Introduction to the S-lang netCDF Module
+  2. NetCDF Module Function Reference
+     2.1 netcdf_open
+
+
+  ______________________________________________________________________
+
+
+
+  1.  Introduction to the S-lang netCDF Module
+
+
+
+  2.  NetCDF Module Function Reference
+
+  2.1.  netcdf_open
+
+
+      Synopsis
+        Create a new file or open an existing one
+
+      Usage
+        nc = netcdf_open (filename, mode)
+
+      Description
+        This function will create a new netCDF file or open an existing
+        one, depending upon the mode argument, which must be one of the
+        following values:
+
+
+             "c"    Create a new file with the specified name
+             "w"    Open an existing file with read/write access
+             "r"    Open an existing file with read-only access
+
+
+
+     Upon success, a netCDF object is returned. Upon failure, a excep-
+     tion will be thrown.
+
+     The supported methods include:
+
+
+            .def_dim  : Define a netCDF dimension
+            .def_var  : Define a netCDF variable
+            .def_grp  : Define a netCDF group
+            .put      : Write data to netCDF variable
+            .get      : Read data from a netCDF variable
+            .put_att  : Write an netCDF attribute
+            .get_att  : Read a netCDF attribute
+            .group    : Instantiate a netCDF object corresponding to a specified group
+            .info     : Print some information about the netCDF object
+            .close    : Close a netCDF file
+
+
+
+     See the documentation for the specific methods for additional in-
+     formation about them.
+
+      Qualifiers
+        ; noclobber: When creating a new file, do not overwrite an
+        existing one
+        ; share: Open the file with netCDF NC_SHARE semantics
+
+      Example
+        This is a simple example that creates a netCDF file and writes a
+        6x4 array with dimension names x and y to a netCDF variable
+        called mydata.
+
+
+             nx = 6, ny = 4;
+             data = _reshape ([1:nx*ny], [nx, ny]);  % Create the data
+             nc = netcdf_open ("file.nc", "c");
+             nc.def_dim("x", nx);
+             nc.def_dim("y", ny);
+             nc.def_var("mydata", ["x", "y"]);
+             nc.put("mydata", data);
+             nc.close ();
+
+
+
+      See Also
+        ``netcdf.def_var'', ``netcdf.def_var'', ``netcdf.def_grp'',
+        ``netcdf.put'', ``netcdf.get'', ``netcdf.put_att'',
+        ``netcdf.get_att'', ``netcdf.group'', ``netcdf.info'',
+        ``netcdf.close''
+
+
+

@@ -35,6 +35,7 @@
 #d usage#1 <tag> Usage </tag> <tt>$1</tt>
 #d description <tag> Description </tag>
 #d qualifiers <tag> Qualifiers </tag>
+#d qualifier#2:3 ; \tt{$1}: $2 \ifarg{$3}{(default: \tt{$3})}<newline>
 #d example <tag> Example </tag>
 #d notes <tag> Notes </tag>
 #d seealso#1 <tag> See Also </tag> <tt>\linuxdoc_list_to_ref{$1}</tt>
@@ -63,7 +64,7 @@
 \linuxdoc
 \begin{\documentstyle}
 
-\title S-Lang <TEMPLATE> Module Reference
+\title S-Lang netCDF Module Reference
 \author John E. Davis, \tt{jed@jedsoft.org}
 \date \__today__
 
@@ -71,9 +72,9 @@
 
 \toc
 
-\chapter{Introduction to the <TEMPLATE> Module}
+\chapter{Introduction to the \slang netCDF Module}
 
-\chapter{<TEMPLATE> Module Function Reference}
-#i <TEMPLATE>funs.tm
+\chapter{NetCDF Module Function Reference}
+#i netcdffuns.tm
 
 \end{\documentstyle}

@@ -7,7 +7,7 @@ TMEXPAND = tmexpand
 SL2TM = sl2tm
 TM2HLP = $(TMEXPAND) -Mslhlp
 
-MODULE = <template>
+MODULE = netcdf
 AUTOGEN_TM = 
 MODULE_DEPS = $(HLPFUNS_TM) $(AUTOGEN_TM) local.tm
 HLPFUNS_TM = helpfile.tm
