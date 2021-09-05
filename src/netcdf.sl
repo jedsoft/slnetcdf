@@ -33,7 +33,11 @@ private define netcdf_put ()
      (ncobj, varname, data, start) = ();
    else if (_NARGS == 3)
      (ncobj, varname, data) = ();
-   else usage ("ncobj.nc_put (varname, data, [start, [count [,stride]]])");
+   else
+     {
+	_pop_n (_NARGS);
+	usage ("<ncobj>.put (varname, data, [start, [count [,stride]]])");
+     }
 
    variable varid = get_varid (ncobj, varname);
    variable ncid = ncobj.group_info.ncid;
@@ -71,7 +75,11 @@ private define netcdf_get ()
      (ncobj, varname, start) = ();
    else if (_NARGS == 2)
      (ncobj, varname) = ();
-   else usage ("ncobj.nc_get (varname, [start, [count [,stride]]])");
+   else
+     {
+	_pop_n(_NARGS);
+	usage ("<ncobj>.get (varname, [start, [count [,stride]]])");
+     }
 
    variable varid = get_varid (ncobj, varname);
    variable group_info = ncobj.group_info;
@@ -111,28 +119,27 @@ private define netcdf_def_dim ()
    variable ncobj, name, val;
 
    if (_NARGS != 3)
-     usage ("ncobj.def_dim (name, len | array-of-grid-points)");
+     {
+	_pop_n (_NARGS);
+	usage ("<ncobj>.def_dim (name, len | array-of-grid-points)");
+     }
 
    (ncobj, name, val) = ();
 
-   if (ncobj.group_info.group_name != "/")
-     throw UsageError, "The ncobj.def_dim method may only be called from the root group object";
-
-   variable shared_info = ncobj.shared_info;
-   variable dimids = shared_info.dimids;
-   variable ncid = shared_info.root_ncid;
-   if (assoc_key_exists (dimids, name))
+   variable ncid = ncobj.group_info.ncid;
+   variable dimid = _nc_inq_dimid (ncid, name);
+   if (dimid != NULL)
      throw InvalidParmError, "Dimension name `$name' has already exists"$, name;
 
    if (typeof (val) != Array_Type)
      {
-	dimids[name] = _nc_def_dim (ncid, name, val);
+	dimid = _nc_def_dim (ncid, name, val);
 	return;
      }
+
    % Otherwise it is a coordinate dimension
    variable len = length (val);
-   dimids[name] = _nc_def_dim (ncid, name, len);
-
+   dimid = _nc_def_dim (ncid, name, len);
    ncobj.def_var (name, _typeof(val), [name]);
    ncobj.put (name, val);
 }
@@ -142,7 +149,10 @@ private define netcdf_def_var ()
    variable ncobj, name, type, dims;
 
    if (_NARGS != 4)
-     usage ("ncobj.def_var (name, type, array-of-dim-names])");
+     {
+	_pop_n (_NARGS);
+	usage ("<ncobj>.def_var (name, type, array-of-dim-names])");
+     }
 
    (ncobj, name, type, dims) = ();
 
@@ -153,16 +163,17 @@ private define netcdf_def_var ()
 
    variable ndims = length(dims);
    variable dimids = NetCDF_Dim_Type[ndims];
-   variable shared_dimids = ncobj.shared_info.dimids;
+   variable ncid = group_info.ncid;
    _for (0, ndims-1, 1)
      {
 	variable i = ();
 	variable dim_i = dims[i];
-	ifnot (assoc_key_exists (shared_dimids, dim_i))
+	variable dimid = _nc_inq_dimid (ncid, dim_i);
+	if (dimid == NULL)
 	  throw InvalidParmError, "Dimension name `${dim_i}' does not exist"$;
-	dimids[i] = shared_dimids[dim_i];
+	dimids[i] = dimid;
      }
-   varids[name] = _nc_def_var (group_info.ncid, name, type, dimids);
+   varids[name] = _nc_def_var (ncid, name, type, dimids);
 }
 
 private define netcdf_put_att ()
@@ -173,7 +184,10 @@ private define netcdf_put_att ()
    else if (_NARGS == 4)
      (ncobj, varname, attname, value) = ();
    else
-     usage ("ncobj.put_att([varname,] attname, value);");
+     {
+	_pop_n (_NARGS);
+	usage ("<ncobj>.put_att([varname,] attname, value);");
+     }
 
    variable ncid = ncobj.group_info.ncid;
    if (varname == NULL)
@@ -191,7 +205,10 @@ private define netcdf_get_att ()
    else if (_NARGS == 3)
      (ncobj, varname, attname) = ();
    else
-     usage ("value = ncobj.get_att([varname,] attname)");
+     {
+	_pop_n (_NARGS);
+	usage ("value = <ncobj>.get_att([varname,] attname)");
+     }
 
    variable ncid = ncobj.group_info.ncid;
    if (varname == NULL)
@@ -214,7 +231,10 @@ private define netcdf_close (ncobj)
 private define netcdf_info ()
 {
    if (_NARGS != 1)
-     usage ("ncobj.info()");
+     {
+	_pop_n (_NARGS);
+	usage ("<ncobj>.info()");
+     }
 
    variable ncobj = ();
    variable shared_info = ncobj.shared_info, group_info = ncobj.group_info;
@@ -226,8 +246,8 @@ private define netcdf_info ()
    str = str + sprintf ("group-name: %S\n", group_info.group_name);
    str = str + "dimensions:\n";
 
-   variable dimids = shared_info.dimids;
-   foreach id (dimids) using ("values")
+   variable dimids = _nc_inq_dimids (ncid, 0);   %  no parents
+   foreach id (dimids)
      {
 	variable len, is_unlimited;
 	(name, len, is_unlimited) = _nc_inq_dim (ncid, id);
@@ -253,7 +273,17 @@ private define netcdf_info ()
 	str = str + sprintf ("\t%S %S(%S);\n", type, name, strjoin(names, ", "));
      }
 
+   str = str + "groups:\n";
+   foreach name (_nc_inq_grps (ncid))
+     {
+	str = str + sprintf ("\t%s;\n", name);
+     }
    () = fputs (str, stdout);
+}
+
+private define netcdf_subgrps (ncobj)
+{
+   return _nc_inq_grps (ncobj.group_info.ncid);
 }
 
 private variable Netcdf_Group_Type = struct
@@ -261,13 +291,13 @@ private variable Netcdf_Group_Type = struct
    ncid,
    varids,
    group_name,
-   subgroups_names,
+   subgroup_names,
 };
 
 private variable Netcdf_Shared_Type = struct
 {
    root_ncid,			       %  ncdid of the root groupd
-   dimids,			       %  dimids are global to all groups
+%   dimids,			       %  dimids are global to all groups
    groups,			       %  assoc array of Netcdf_Group_Type  
 };
 
@@ -285,6 +315,7 @@ private variable Netcdf_Obj = struct
    put_att = &netcdf_put_att,
    get_att = &netcdf_get_att,
    def_grp = &netcdf_def_grp,
+   subgrps = &netcdf_subgrps,
    group = &netcdf_group,
    info = &netcdf_info,
    close = &netcdf_close,
@@ -316,6 +347,7 @@ private define create_new_group_instance (shared_info, ncid, group_name)
 
    (dims, vars) = _nc_inq (ncid);
 
+#iffalse
    variable ids = shared_info.dimids;
    foreach dimid (dims)
      {
@@ -323,8 +355,9 @@ private define create_new_group_instance (shared_info, ncid, group_name)
 	(dim_name,,) = _nc_inq_dim (ncid, dimid);
 	ids[dim_name] = dimid;
      }
+#endif
 
-   ids = group_info.varids;
+   variable ids = group_info.varids;
    foreach varid (vars)
      {
 	variable var_name = _nc_inq_varname (ncid, varid);
@@ -412,7 +445,10 @@ private define find_group (ncobj, name, def_grp_ok)
 private define netcdf_def_grp ()
 {
    if (_NARGS != 2)
-     usage ("ncgrp = ncobj.def_grp (group_name)");
+     {
+	_pop_n (_NARGS);
+	usage ("ncgrp = <ncobj>.def_grp (group_name)");
+     }
    variable ncobj, name;
    (ncobj, name) = ();
    return find_group (ncobj, name, 1);
@@ -421,7 +457,11 @@ private define netcdf_def_grp ()
 private define netcdf_group ()
 {
    if (_NARGS != 2)
-     usage ("ncgrp = ncobj.group (group_name)");
+     {
+	_pop_n (_NARGS);
+	usage ("ncgrp = <ncobj>.group (group_name)");
+     }
+
    variable ncobj, name;
    (ncobj, name) = ();
    return find_group (ncobj, name, 0);
@@ -445,13 +485,24 @@ define netcdf_open ()
    if (_NARGS != 2)
      {
 	usage ("\
-ncobj = netcdf_open (file, mode [; qualifiers]);\n\
+nc = netcdf_open (file, mode [; qualifiers]);\n\
  mode:\n\
   \"r\" (read-only existing),\n\
   \"w\" (read-write existing),\n\
   \"c\" (create)\n\
 Qualifiers:\n\
  noclobber, share, lock\n\
+Methods:\n\
+  .get       Read a netCDF variable\n\
+  .put       Write to a netCDF variable\n\
+  .def_dim   Define a netCDF dimension\n\
+  .def_var   Define a netCDF variable\n\
+  .put_att   Write a netCDF attribute\n\
+  .get_att   Read a netCDF attribute\n\
+  .def_grp   Define a netCDF group\n\
+  .group     Open a netCDF group\n\
+  .info      Print some information about the object\n\
+  .close     Close the underlying netCDF file\n\
 "
 	      );
      }
@@ -484,7 +535,7 @@ Qualifiers:\n\
    variable shared_info = @Netcdf_Shared_Type;
    variable ncid = (@open_func)(file, flags, shared_info);
 
-   shared_info.dimids = Assoc_Type[NetCDF_Dim_Type];
+   %shared_info.dimids = Assoc_Type[NetCDF_Dim_Type];
    shared_info.groups = Assoc_Type[Struct_Type];
    shared_info.root_ncid = ncid;
 

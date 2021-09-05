@@ -802,6 +802,7 @@ static int get_unlimited_dim_ids (int ncid, int **unlim_dimsp, int *num_unlimp)
    return 0;
 }
 
+/* unlim_dims could be NULL indicating that there are no unlimited dimensions */
 static NCid_Dim_Type *inq_and_create_dim (int ncid, int dimid, int *unlim_dims, int num_unlim)
 {
    size_t len;
@@ -887,6 +888,9 @@ static SLang_Array_Type *get_at_ncdims (NCid_Type *nc)
    if (-1 == get_unlimited_dim_ids (ncid, &unlim_dims, &num_unlim))
      return NULL;
 
+   /* Note that unlim_dims could be NULL here if there are no unlimited dimensions.
+    * The calls to SLfree are ok for NULL arguments.
+    */
    ndims = max_dim_id;
    if (NULL == (at_ncdims = SLang_create_array (NCid_Dim_Type_Id, 0, NULL, &ndims, 1)))
      {
@@ -906,6 +910,59 @@ static SLang_Array_Type *get_at_ncdims (NCid_Type *nc)
      }
    SLfree (unlim_dims);
    return at_ncdims;
+}
+
+static SLang_Array_Type *get_at_ncdims2 (NCid_Type *nc, int inc_parents)
+{
+   NCid_Dim_Type **ncdims;
+   SLang_Array_Type *at_ncdims = NULL;
+   int *dimids, *unlim_dims;
+   SLindex_Type num_dims;
+   int status, i, num_unlim, ndims;
+
+   dimids = NULL;
+   status = nc_inq_dimids (nc->ncid, &ndims, dimids, inc_parents);
+   if (status != NC_NOERR)
+     {
+	throw_nc_error ("_nc_inq_dimids", status);
+	return NULL;
+     }
+   if (NULL == (dimids = (int *)SLmalloc ((ndims+1) * sizeof(int))))
+     return NULL;
+
+   status = nc_inq_dimids (nc->ncid, &ndims, dimids, inc_parents);
+   if (status != NC_NOERR)
+     {
+	throw_nc_error ("_nc_inq_dimids", status);
+	SLfree (dimids);
+	return NULL;
+     }
+   if (-1 == get_unlimited_dim_ids (nc->ncid, &unlim_dims, &num_unlim))
+     {
+	SLfree (dimids);
+	return NULL;
+     }
+   /* unlim_dims could be NULL with num_unlim set to 0.  The call to SLfree is safe */
+   num_dims = ndims;
+   if (NULL == (at_ncdims = SLang_create_array (NCid_Dim_Type_Id, 0, NULL, &num_dims, 1)))
+     goto return_error;
+
+   ncdims = (NCid_Dim_Type **) at_ncdims->data;
+   for (i = 0; i < ndims; i++)
+     {
+	if (NULL == (ncdims[i] = inq_and_create_dim (nc->ncid, dimids[i], unlim_dims, num_unlim)))
+	  goto return_error;
+     }
+
+   SLfree (unlim_dims);
+   SLfree (dimids);
+   return at_ncdims;
+
+return_error:
+   SLang_free_array (at_ncdims);
+   SLfree (unlim_dims);
+   SLfree (dimids);
+   return NULL;
 }
 
 static int *get_var_dimids (int ncid, int varid, SLindex_Type *num_dimsp, nc_type *xtypep)
@@ -1067,7 +1124,7 @@ static void sl_nc_inq (NCid_Type *nc)
 	return;
      }
 
-   if (NULL == (all_at_ncdims = get_at_ncdims (nc)))
+   if (NULL == (all_at_ncdims = get_at_ncdims2 (nc, 1)))
      return;
 
    if (NULL == (at_ncvars = get_at_ncvars (nc->ncid, all_at_ncdims)))
@@ -1113,7 +1170,7 @@ static void sl_nc_inq_var (NCid_Type *nc, NCid_Var_Type *ncvar)
 	return;
      }
 
-   if (NULL == (all_at_ncdims = get_at_ncdims (nc)))
+   if (NULL == (all_at_ncdims = get_at_ncdims2 (nc, 1)))
      return;
 
    at_ncdims = get_var_at_ncdims (nc->ncid, ncvar->var_id, all_at_ncdims, &xtype);
@@ -1288,6 +1345,35 @@ static void sl_nc_put_global_att (NCid_Type *nc, const char *name)
    put_att (nc, NC_GLOBAL, name);
 }
 
+/* Convert the elements of an array to slsstrings */
+static int convert_str_array_to_slstr_array (SLang_Array_Type *at, int free_strs)
+{
+   char **sp;
+   SLuindex_Type i, num;
+   int status = 0;
+
+   sp = (char **)at->data;
+   num = at->num_elements;
+
+   for (i = 0; i < num; i++)
+     {
+	char *s0 = sp[i], *s1;
+
+	if (s0 == NULL) continue;
+	if (status == 0)
+	  {
+	     s1 = SLang_create_slstring (s0);
+	     if (s1 == NULL) status = -1;
+	  }
+	else s1 = NULL;
+
+	if (free_strs) SLfree (s0);
+	sp[i] = s1;
+     }
+
+   return status;
+}
+
 static void get_att (NCid_Type *nc, int varid, const char *name)
 {
    SLang_Array_Type *at;
@@ -1369,26 +1455,7 @@ static void get_att (NCid_Type *nc, int varid, const char *name)
    if (sltype == SLANG_STRING_TYPE)
      {
 	/* We need to convert the strings into slstrings */
-	char **sp;
-	SLindex_Type i;
-	int err = 0;
-
-	sp = (char **)at->data;
-	for (i = 0; i < num; i++)
-	  {
-	     char *s0 = sp[i], *s1;
-
-	     if (s0 == NULL) continue;
-	     if (err == 0)
-	       {
-		  s1 = SLang_create_slstring (s0);
-		  if (s1 == NULL) err = 1;
-	       }
-	     else s1 = NULL;
-	     SLfree (s0);
-	     sp[i] = s1;
-	  }
-	if (err)
+	if (-1 == convert_str_array_to_slstr_array (at, 1))
 	  {
 	     SLang_free_array (at);
 	     return;
@@ -1434,6 +1501,116 @@ static void sl_nc_inq_grp_ncid (NCid_Type *nc, const char *name)
    (void) push_ncid (grpid, 1);
 }
 
+static void sl_nc_inq_grps (NCid_Type *nc)
+{
+   SLang_Array_Type *at;
+   int *grpids;
+   char **grp_names;
+   SLindex_Type n;
+   int status, i, numgrps;
+
+   status = nc_inq_grps (nc->ncid, &numgrps, NULL);
+   if (status != NC_NOERR)
+     {
+	throw_nc_error ("nc_inq_grps", status);
+	return;
+     }
+   if (NULL == (grpids = (int *)SLmalloc((numgrps+1) * sizeof(int))))
+     return;
+
+   status = nc_inq_grps (nc->ncid, &numgrps, grpids);
+   if (status != NC_NOERR)
+     {
+	SLfree (grpids);
+	throw_nc_error ("nc_inq_grps", status);
+	return;
+     }
+   n = numgrps;
+   if (NULL == (at = SLang_create_array (SLANG_STRING_TYPE, 0, NULL, &n, 1)))
+     {
+	SLfree (grpids);
+	return;
+     }
+   grp_names = (char **)at->data;
+
+   for (i = 0; i < n; i++)
+     {
+	char name[NC_MAX_NAME];
+
+	if (NC_NOERR != (status = nc_inq_grpname (grpids[i], name)))
+	  {
+	     throw_nc_error ("nc_inq_grpname", status);
+	     goto free_and_return;
+	  }
+	if (NULL == (grp_names[i] = SLang_create_slstring (name)))
+	  goto free_and_return;
+     }
+
+   (void) SLang_push_array (at, 0);
+   /* drop */
+
+free_and_return:
+   SLfree (grpids);
+   SLang_free_array (at);
+}
+
+static void sl_nc_inq_dimid (NCid_Type *nc, const char *name)
+{
+   NCid_Dim_Type *ncdim;
+   int *unlim_dims;
+   size_t len;
+   int status, dimid, i, num_unlim, is_unlim;
+
+   status = nc_inq_dimid (nc->ncid, name, &dimid);
+   if (status != NC_NOERR)
+     {
+	(void) SLang_push_null ();
+	return;
+     }
+
+   /* Why is there no API function to determine if a dim id is limited???
+    * I was unable to find one.
+    */
+   if (-1 == get_unlimited_dim_ids (nc->ncid, &unlim_dims, &num_unlim))
+     return;
+
+   /* unlim_dims could be NULL with num_unlim set to 0.  The call to SLfree is safe */
+   is_unlim = 0;
+   for (i = 0; i < num_unlim; i++)
+     {
+	if (unlim_dims[i] == dimid)
+	  {
+	     is_unlim = 1;
+	     break;
+	  }
+     }
+   SLfree (unlim_dims);		       /* NULL ok */
+
+   len = 0;
+   if ((is_unlim == 0)
+       && (NC_NOERR != (status = nc_inq_dimlen (nc->ncid, dimid, &len))))
+     {
+	throw_nc_error ("nc_inq_dimlen", status);
+	return;
+     }
+
+   if (NULL == (ncdim = alloc_ncid_dim_type (nc->ncid, dimid, len)))
+     return;
+
+   (void) push_ncid_dim_type (ncdim);
+   free_ncid_dim_type (ncdim);
+}
+
+
+static void sl_nc_inq_dimids (NCid_Type *nc, int *include_parentsp)
+{
+   SLang_Array_Type *at;
+
+   at = get_at_ncdims2 (nc, *include_parentsp);
+   if (at != NULL)
+     (void) SLang_push_array (at, 1);
+}
+
 
 #define NCID_DUMMY ((SLtype)-1)
 #define NCID_VAR_DUMMY ((SLtype)-2)
@@ -1460,6 +1637,8 @@ static SLang_Intrin_Fun_Type Module_Intrinsics [] =
    MAKE_INTRINSIC_2("_nc_get_vars", sl_nc_get_vars, V, NCID_DUMMY, NCID_VAR_DUMMY),
 
    MAKE_INTRINSIC_2("_nc_inq_dim", sl_nc_inq_dim, V, NCID_DUMMY, NCID_DIM_DUMMY),
+   MAKE_INTRINSIC_2("_nc_inq_dimid", sl_nc_inq_dimid, V, NCID_DUMMY, S),
+   MAKE_INTRINSIC_2("_nc_inq_dimids", sl_nc_inq_dimids, V, NCID_DUMMY, I),
    MAKE_INTRINSIC_1("_nc_inq", sl_nc_inq, V, NCID_DUMMY),
    MAKE_INTRINSIC_2("_nc_inq_var", sl_nc_inq_var, V, NCID_DUMMY, NCID_VAR_DUMMY),
    MAKE_INTRINSIC_2("_nc_inq_varname", sl_nc_inq_varname, V, NCID_DUMMY, NCID_VAR_DUMMY),
@@ -1472,6 +1651,7 @@ static SLang_Intrin_Fun_Type Module_Intrinsics [] =
 
    MAKE_INTRINSIC_2("_nc_def_grp", sl_nc_def_grp, V, NCID_DUMMY, S),
    MAKE_INTRINSIC_2("_nc_inq_grp_ncid", sl_nc_inq_grp_ncid, V, NCID_DUMMY, S),
+   MAKE_INTRINSIC_1("_nc_inq_grps", sl_nc_inq_grps, V, NCID_DUMMY),
    SLANG_END_INTRIN_FUN_TABLE
 };
 
