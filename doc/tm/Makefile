@@ -8,8 +8,8 @@ SL2TM = sl2tm
 TM2HLP = $(TMEXPAND) -Mslhlp
 
 MODULE = netcdf
-AUTOGEN_TM = 
-MODULE_DEPS = $(HLPFUNS_TM) $(AUTOGEN_TM) local.tm
+AUTOGEN_TM =
+MODULE_DEPS = $(HLPFUNS_TM) $(MODULE)funs.tm $(AUTOGEN_TM) local.tm
 HLPFUNS_TM = helpfile.tm
 HLP_FILE_DEPS = $(MODULE)funs.tm local.tm
 

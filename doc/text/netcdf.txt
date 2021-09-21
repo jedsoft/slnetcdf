@@ -1,14 +1,22 @@
   S-Lang netCDF Module Reference
   John E. Davis, jed@jedsoft.org
-  Aug 23, 2021
+  Sep 21, 2021
   ____________________________________________________________
 
   Table of Contents
 
 
   1. Introduction to the S-lang netCDF Module
-  2. NetCDF Module Function Reference
-     2.1 netcdf_open
+  2. Getting Started
+  3. Limitations
+     3.1 netCDF limitations
+     3.2 S-lang limitations
+
+  4. NetCDF Module Function Reference
+     4.1 netcdf_open
+     4.2 netcdf.def_var
+     4.3 netcdf.def_dim
+     4.4 netcdf.def_grp
 
 
   ______________________________________________________________________
@@ -17,11 +25,136 @@
 
   1.  Introduction to the S-lang netCDF Module
 
+  The S-lang netCDF module provides a high-level object-oriented
+  interface and a low-level interface to the netCDF-4 library. The low-
+  level interface was designed mainly to support the high-level
+  interface. As such, only the high-level interface is described in this
+  document.
+
+  The module supports the following netCDF features:
+
+  o  Attributes
+
+  o  Groups
 
 
-  2.  NetCDF Module Function Reference
 
-  2.1.  netcdf_open
+  2.  Getting Started
+
+  Before the module can be used it must first be loaded into the
+  interpreter using a line such as
+
+
+           require ("netcdf");
+
+
+
+  This will bring a function called netcdf_open into the interpreter's
+  namesspace. The netcdf_open function is used to open an existing
+  netCDF file for reading and writing, or to create a new one. For
+  example,
+
+
+          nc = netcdf_open ("myfile.nc", "r");
+
+
+
+  will open an existing file called myfile.nc for reading and assigns an
+  object representing the file to a variable called nc.  Interacting
+  with the contents of the file take place via the nc variable, e.g.,
+
+
+          p = nc.get("pressure");
+
+
+
+  will read the value of a netCDF variable called pressure and assign it
+  to p.
+
+  Calling netcdf_open without any arguments will cause a usage messsage
+  to be displayed showing the methods supported by the object:
+
+
+       Usage: nc = netcdf_open (file, mode [; qualifiers]);
+        mode:
+         "r" (read-only existing),
+         "w" (read-write existing),
+         "c" (create)
+       Qualifiers:
+        noclobber, share, lock
+       Methods:
+         .get       Read a netCDF variable
+         .put       Write to a netCDF variable
+         .def_dim   Define a netCDF dimension
+         .def_var   Define a netCDF variable
+         .put_att   Write a netCDF attribute
+         .get_att   Read a netCDF attribute
+         .def_grp   Define a netCDF group
+         .group     Open a netCDF group
+         .info      Print some information about the object
+         .close     Close the underlying netCDF file
+
+
+
+  Similarly, calling one of the methods with the incorrect number of ar-
+  guments will display a usage for the method, e.g.,
+
+
+         nc.get();
+         Usage: <ncobj>.get (varname, [start, [count [,stride]]])
+
+
+
+  Here and in all of the usage messages displayed by the module, <ncobj>
+  represents the variable name through which the method was invoked. In
+  this example, it is nc.
+
+
+
+  3.  Limitations
+
+  3.1.  netCDF limitations
+
+  NetCDF does not support multi-dimensional attributes. The module will
+  write such an array as a single dimensional array with the same number
+  of elements. For example, a 3x7 array will be written as a 21 element
+  1-d array. After reading the attributes value, the reshape function
+  may be used to convert it to the desired multi-dimensional shape.
+
+  3.2.  S-lang limitations
+
+  The main limitaton that the user needs to be aware is that netCDF
+  array sizes can be larger than a single S-lang version 2 array can
+  support. S-lang version 2 arrays are limited to 7 dimensions, and
+  support only a total of 2147483647 elements. The reason for this is
+  that S-lang arrays are indexed by signed 32 bit integers, with
+  negative indices representing offsets from the last element of an
+  array.
+
+  For netCDF variables that contain more than 2147483647 elements, array
+  slicing must be used. For example, suppose that a netCDF file contains
+  a data cube with dimensions [1024, 2048, 2048]. Such an array contains
+  4294967296 elements, which exceeds the maximum number supported by the
+  interpreter. Often such objects have the dimensions that have some
+  physical meaning. For example, this data cube might represent a
+  2048x2048 image of a scene observed 1024 times.  In this scenario, it
+  might be more natural to read one image and process one image from the
+  cube. For example, the mean of the images may be compute using:
+
+
+           nt = 1024, nx = 2048, ny = 2048;
+           avg_image = Double_Type[nx, ny];
+           for (i = 0; i < nt; i++)
+             {
+                avg_image += nc.get ("cube", [i,0,0], [1, nx, ny]);
+             }
+           avg_image /= nt;
+
+
+
+  4.  NetCDF Module Function Reference
+
+  4.1.  netcdf_open
 
 
       Synopsis
@@ -87,10 +220,134 @@
 
 
       See Also
-        ``netcdf.def_var'', ``netcdf.def_var'', ``netcdf.def_grp'',
+        ``netcdf.def_dim'', ``netcdf.def_var'', ``netcdf.def_grp'',
         ``netcdf.put'', ``netcdf.get'', ``netcdf.put_att'',
         ``netcdf.get_att'', ``netcdf.group'', ``netcdf.info'',
         ``netcdf.close''
+
+  4.2.  netcdf.def_var
+
+
+      Synopsis
+        Define a new netCDF variable
+
+      Usage
+        nc.def_var (String_Type varname, DataType_Type type, Array_Type
+        dim_names)
+
+      Description
+        This function is used to define a new netCDF variable with name
+        vname, and whose type and dimensions are given by the type and
+        dim_names parameters, respectively. The type parameter must be
+        one of the following values:
+
+
+             Char_Type (Signed 8-bit integer)
+             UChar_Type (Unsigned 8-bit integer)
+             Short_Type, Int16_Type (Signed 16 bit integer)
+             UShort_Type, UInt16_Type (Unsigned 16 bit integer)
+             Int_Type, Int32_Type (Signed 32 bit integer)
+             UInt_Type, UInt32_Type (Unsigned 32 bit integer)
+             LLong_Type, Int64_Type (Signed 64 bit integer)
+             ULLong_Type, UInt64_Type (Unsigned 64 bit integer)
+             Float_Type (32 bit float)
+             Double_Type (64 bit float)
+             String_Type (string)
+
+
+
+     The dim_names array is a 1-d array of previously defined dimension
+     names.
+
+      Example
+        The following example results in the creation of a netCDF array
+        20x30 array of 32 bit floating point values.
+
+
+              nc.def_dim ("x", 20);
+              nc.def_dim ("y", 30);
+              nc.def_var ("xy_image", Float_Type, ["x", "y"]);
+
+
+
+      See Also
+        ``netcdf.def_dim'', ``netcdf.def_grp'', ``netcdf.put'',
+        ``netcdf.get'', ``netcdf.put_att'', ``netcdf.get_att'',
+        ``netcdf.group'', ``netcdf.info'', ``netcdf.close''
+
+  4.3.  netcdf.def_dim
+
+
+      Synopsis
+        Create a netCDF dimension variable
+
+      Usage
+        nc.def_dim (String_Type dimname, Int_Type len | Array_Type grid)
+
+      Description
+        The .def_dim method creates a netCDF dimension named with the
+        name give by the dimname parameter. The second parameter
+        specifies the length of the dimension. It may be either an
+        integer or an array of values. If the second parameter is an
+        integer, then the dimension will have the size given by the
+        integer. A dimension whose size is defined to be 0 is called an
+        unlimited dimension.  NetCDF variables using such a dimension
+        may grow in the unlimited dimenson as more elements are added to
+        the variable.
+
+        If the second parameter is an array, then the dimension size
+        will be set to the length of the array. In addition, the
+        function will create a variable of the same name as the
+        dimension and assign it the values of the array. NetCDF calls
+        such a variable a ``coordinate-variable''.
+
+      Example
+        Consider the the creation of a netCDF variable "position" that
+        represents the 3-d position of a particle as it moves in time.
+        At some time t, the position of the particle is given by the 3
+        spatial values x, y, and z, which may be arranged as an array of
+        3 values [x,y,z]. A time-series of such an array may be
+        represented in netCDF as follows:
+
+
+             nc.def_dim("time", 0);
+             nc.def_dim("space", 3);
+             nc.def_var("position", ["time", "space"]);
+
+
+
+     Here, the time dimension has been defined to be unlimited, and the
+     space dimension has been define to be a length of 3, corresponding
+     to the 3 spatial dimensions.
+
+      Notes
+        NetCDF dimensions are scoped such that they are visible to the
+        group where they have been defined, and all child groups.
+
+      See Also
+        ``netcdf.def_var'', ``netcdf.def_grp'', ``netcdf.put'',
+        ``netcdf.get'', ``netcdf.put_att'', ``netcdf.get_att'',
+        ``netcdf.group'', ``netcdf.info'', ``netcdf.close''
+
+  4.4.  netcdf.def_grp
+
+
+      Synopsis
+        Create a new netCDF group
+
+      Usage
+        ncgrp = nc.def_grp (String_Type grpname)
+
+      Description
+        This method create a new group of the specified name and returns
+        an object representing it. All operations on the group should
+        take place via the methods defined by object.
+
+      Example
+        Suppose that a netCDF file has a dimension called "longitude"
+
+      See Also
+        ``netcdf_open'', ``netcdf.group''
 
 
 
