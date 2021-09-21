@@ -23,6 +23,7 @@ private define create_data ()
 	lats = lats,
 	pres = pres,
 	temp = temp,
+	scalar = 20.0,
      };
 }
 
@@ -45,6 +46,7 @@ private define pres_temp_4D_wr (file, data, group)
    nc.def_var ("temperature", Float_Type, dims);
    nc.put_att ("pressure", "units", "hPa");
    nc.put_att ("temperature", "units", "celsius");
+   nc.def_var ("scalar", Double_Type, NULL);
 
    % Write the data
    variable rec, nrec = data.nrec, start = [0,0,0,0];
@@ -57,7 +59,8 @@ private define pres_temp_4D_wr (file, data, group)
 
    nc.put_att ("Global-Array-of-Strings",
 		["This is line 1", "This is line 2", "This is line 3"]);
-
+   nc.put_att ("A-2d-Array", _reshape ([1:77], [7,11]));
+   nc.put ("scalar", data.scalar);
    nc.info ();
 
    nc_root.close ();
@@ -78,7 +81,9 @@ private define check_eqs (name, a, b)
 
 private define check_get_att (nc, varname, attname, val)
 {
-   variable val1 = nc.get_att (varname, attname);
+   variable val1;
+
+   val1 = nc.get_att (varname, attname);
    if (-1 == check_eqs (NULL, val, val1))
      {
 	() = fprintf (stderr, "get_att %S->%S failed, expected %S got %S\n",
@@ -108,7 +113,6 @@ private define pres_temp_4D_rd (file, data, group)
      return -1;
    if (-1 == check_get_att (nc_root, "longitude", "units", "degrees_east"))
      return -1;
-
    if (-1 == check_get_var (nc_root, "longitude", data.lons))
      return -1;
    if (-1 == check_get_var (nc_root, "latitude", data.lats))
@@ -118,6 +122,8 @@ private define pres_temp_4D_rd (file, data, group)
    if (-1 == check_get_att (nc, "pressure", "units", "hPa"))
      return -1;
    if (-1 == check_get_att (nc, "temperature", "units", "celsius"))
+     return -1;
+   if (-1 == check_get_att (nc, NULL, "A-2d-Array", [1:77]))
      return -1;
 
    variable x, rec, nrec = data.nrec,
@@ -140,6 +146,9 @@ private define pres_temp_4D_rd (file, data, group)
 	if (-1 == check_eqs ("temperature", x, data.temp))
 	  return -1;
      }
+
+   if (-1 == check_get_var (nc, "scalar", data.scalar))
+     return -1;
 
    nc_root.close();
    return 0;

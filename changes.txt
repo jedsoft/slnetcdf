@@ -1,4 +1,6 @@
-Changes since 0.0.0
+Changes since 0.1.0
+
+1.  Added support for reading compound types and scalars.
 
 
 

@@ -43,6 +43,12 @@ private define netcdf_put ()
    variable ncid = ncobj.group_info.ncid;
    variable shape = _nc_inq_varshape (ncid, varid);
    variable ndims = length (shape);
+   if (ndims == 0)
+     {
+	_nc_put_vars (data, ncid, varid);   %  scalar
+	return;
+     }
+
    if (start == NULL) start = ULong_Type[ndims];
    if (count == NULL)
      {
@@ -83,9 +89,18 @@ private define netcdf_get ()
 
    variable varid = get_varid (ncobj, varname);
    variable group_info = ncobj.group_info;
+
+   ifnot (assoc_key_exists (group_info.varids, varname))
+     throw InvalidParmError, "Variable name `$varname' does not exist or has not been defined"$;
+
    variable ncid = group_info.ncid;
    variable shape = _nc_inq_varshape (ncid, varid);
    variable ndims = length (shape);
+   if (ndims == 0)
+     {
+	return _nc_get_vars (ncid, varid);
+     }
+
    if (start == NULL)
      start = ULong_Type[ndims];
    else
@@ -102,9 +117,6 @@ private define netcdf_get ()
 	is_scalar = 1;
      }
    if (stride == NULL) stride = Long_Type[ndims]+1;
-
-   ifnot (assoc_key_exists (group_info.varids, varname))
-     throw InvalidParmError, "Variable name `$varname' does not exist or has not been defined"$;
 
    variable data = _nc_get_vars (start, count, stride, ncid, varid);
    if (is_scalar && (length (data) == 1))
@@ -151,7 +163,7 @@ private define netcdf_def_var ()
    if (_NARGS != 4)
      {
 	_pop_n (_NARGS);
-	usage ("<ncobj>.def_var (name, type, array-of-dim-names])");
+	usage ("<ncobj>.def_var (name, type, array-of-dim-names|NULL])");
      }
 
    (ncobj, name, type, dims) = ();
@@ -161,7 +173,7 @@ private define netcdf_def_var ()
    if (assoc_key_exists (varids, name))
      throw InvalidParmError, "Variable name `$name' already exists"$, name;
 
-   variable ndims = length(dims);
+   variable ndims = (dims == NULL) ? 0 : length(dims);
    variable dimids = NetCDF_Dim_Type[ndims];
    variable ncid = group_info.ncid;
    _for (0, ndims-1, 1)
@@ -260,8 +272,16 @@ private define netcdf_info ()
    str = str + "variables:\n";
    foreach id (group_info.varids) using ("values")
      {
-	variable type, vardims;
-	(name, type, vardims) = _nc_inq_var (ncid, id);
+	variable type, vardims, varatts, e;
+	try (e)
+	  {
+	     (name, type, vardims, varatts) = _nc_inq_var (ncid, id);
+	  }
+	catch AnyError:
+	  {
+	     str = str + sprintf ("**** Unsupported variable: %S : %S\n", _nc_inq_varname (ncid, id), e.message);
+	     continue;
+	  }
 
 	n = length (vardims);
 	names = String_Type[n];
@@ -271,6 +291,14 @@ private define netcdf_info ()
 	  }
 
 	str = str + sprintf ("\t%S %S(%S);\n", type, name, strjoin(names, ", "));
+	if (length (varatts))
+	  {
+	     str = str + "\tAttributes:\n";
+	     foreach name (varatts)
+	       {
+		  str = str + sprintf ("\t\t%s\n", name);
+	       }
+	  }
      }
 
    str = str + "groups:\n";
