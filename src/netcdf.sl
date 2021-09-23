@@ -21,6 +21,24 @@ private define get_varid (ncobj, varname)
    throw UndefinedNameError, "netcdf variable $varname is undefined"$;
 }
 
+
+% On stack: ncobj, varname
+% returns (ncobj, ncid, varid, varname, varshape)
+private define pop_ncobj_var_info ()
+{
+   variable ncobj, varname;
+   (ncobj, varname) = ();
+
+   variable varid = get_varid (ncobj, varname);
+   variable group_info = ncobj.group_info;
+
+   ifnot (assoc_key_exists (group_info.varids, varname))
+     throw InvalidParmError, "Variable name `$varname' does not exist or has not been defined"$;
+
+   variable ncid = group_info.ncid;
+   return (ncobj, ncid, varid, varname, _nc_inq_varshape (ncid, varid));
+}
+
 private define netcdf_put ()
 {
    variable ncobj, varname, data, start = NULL, count = NULL, stride = NULL;
@@ -70,31 +88,22 @@ private define netcdf_put ()
 
 private define netcdf_get ()
 {
-   variable ncobj, varname, start = NULL, count = NULL, stride = NULL;
-   variable is_scalar = 0;
+   variable start = NULL, count = NULL, stride = NULL;
 
    if (_NARGS == 5)
-     (ncobj, varname, start, count, stride) = ();
+     (start, count, stride) = ();
    else if (_NARGS == 4)
-     (ncobj, varname, start, count) = ();
+     (start, count) = ();
    else if (_NARGS == 3)
-     (ncobj, varname, start) = ();
-   else if (_NARGS == 2)
-     (ncobj, varname) = ();
-   else
+     start = ();
+   else if (_NARGS != 2)
      {
 	_pop_n(_NARGS);
 	usage ("<ncobj>.get (varname, [start, [count [,stride]]])");
      }
+   variable ncobj, ncid, varid, varname, shape;
+   (ncobj, ncid, varid, varname, shape) = pop_ncobj_var_info ();
 
-   variable varid = get_varid (ncobj, varname);
-   variable group_info = ncobj.group_info;
-
-   ifnot (assoc_key_exists (group_info.varids, varname))
-     throw InvalidParmError, "Variable name `$varname' does not exist or has not been defined"$;
-
-   variable ncid = group_info.ncid;
-   variable shape = _nc_inq_varshape (ncid, varid);
    variable ndims = length (shape);
    if (ndims == 0)
      {
@@ -111,6 +120,8 @@ private define netcdf_get ()
 	  }
 	catch AnyError: throw IndexError, "Invalid negative index";
      }
+
+   variable is_scalar = 0;
    if (count == NULL)
      {
 	count = shape - start;
@@ -123,6 +134,113 @@ private define netcdf_get ()
      return data[[0]];
 
    return data;
+}
+
+private define inc_counter (c, cmax, n)
+{
+   variable i = n;
+   while (i != 0)
+     {
+	i--;
+	if (c[i] != cmax[i])
+	  {
+	     c[i]++;
+	     return 1;
+	  }
+	c[i] = 0;
+     }
+   return 0;
+}
+
+private define netcdf_get_slices ()
+{
+   if (_NARGS < 3)
+     usage ("<ncobj>.get_slices(varname, i [,j ...] ; dims=[dim_i, ...]");
+
+   % The comments below are given in the context of an array A whose shape
+   % is [n0, n1, n2, n3] and it is desired to get the subarray
+   % [*, i1, i2, *] where i1 and i2 are index-arrays.  The resulting
+   % array B will have the shape [n0, length(i1), length(i2), n3]
+
+   variable fixed_index_list = __pop_list (_NARGS-2);   %  {i1, i2}
+   variable ncobj, ncid, varid, varname, var_shape;
+   (ncobj, ncid, varid, varname, var_shape) = pop_ncobj_var_info ();
+   % varname = A, var_shape = [n0, n1, n2, n3]
+
+   variable out_shape = @var_shape; % [n0, n1, n2, n3]
+   variable fixed_dims = qualifier ("dims", [0:length(fixed_index_list)-1]);
+   % dims = [1, 2]
+   variable nfixed_dims = length(fixed_dims); % 2
+   if (nfixed_dims != length (fixed_index_list))
+     {
+	throw InvalidParmError, "Expected the dims qualifier to have a length equal to the number of slice indices";
+     }
+
+   variable i, j, idx;
+   variable counter = Int_Type[nfixed_dims];  % [0, 0]
+   variable counter_max = Int_Type[nfixed_dims]; % [0, 0]
+   variable final_out_shape = @out_shape;    %  [n0,n1,n2,n3]
+   _for i (0, nfixed_dims-1, 1)
+     {
+	idx = fixed_index_list[i];
+	j = fixed_dims[i];
+	variable n_i = length (idx);  % n_0,1 = length(i1,i2)
+	counter_max[i] = n_i-1;
+	out_shape[j] = n_i;
+	final_out_shape[j] = n_i;
+	if (typeof (idx) != Array_Type)
+	  final_out_shape[j] = -1;     %  mark a degenerate dim
+     }
+   final_out_shape = final_out_shape[where(final_out_shape != -1)];
+   if (length (final_out_shape) == 0) final_out_shape = NULL;   %  scalar
+
+   % Now counter_max = [length(i1)-1, length(i2)-1]
+   % and out_shape = [n0, length(i1), length(i2), n3]
+
+   variable start = Int_Type[length (var_shape)];   %  start = [0, 0, 0, 0]
+   variable count = @var_shape;	       %  count = [n0, n1, n2, n3]
+   count[fixed_dims] = 1;		       %  count[[1,2]] = 1 ==> count = [n0, 1, 1, n3]
+
+   variable outdata;
+   % If only a single slice is to be retrieved, do that now and return.
+   if (all(counter_max == 0))
+     {
+	start[fixed_dims] = [__push_list (fixed_index_list)];
+	outdata = _nc_get_vars (start, count, NULL, ncid, varid);
+	if (final_out_shape == NULL) return outdata[0];
+	reshape (outdata, final_out_shape);
+	return outdata;
+     }
+
+   variable out_index_array_list = {};
+   _for i (0, length (out_shape)-1, 1)
+     {
+	list_append (out_index_array_list, [*]);
+     }
+   % out_index_array_list = {[*], ...}
+
+   outdata = NULL;
+   do
+     {
+	_for i (0, nfixed_dims-1, 1)
+	  {
+	     idx = fixed_dims[i];
+	     j = counter[i];
+	     out_index_array_list[idx] = [j];
+	     start[idx] = fixed_index_list[i][j];
+	  }
+	% out_index_array_list = {[*], [counter[0]], [counter[1]], [*]}
+	% start = [0, i1[counter[0]], i2[counter[1]], 0];
+	variable slice = _nc_get_vars (start, count, NULL, ncid, varid);
+	if (outdata == NULL)
+	  outdata = @Array_Type(_typeof(slice), out_shape);
+	outdata[__push_list(out_index_array_list)] = __tmp(slice);
+     }
+   while (inc_counter (counter, counter_max, nfixed_dims));
+
+   if (final_out_shape == NULL) return outdata;
+   reshape (outdata, final_out_shape);
+   return outdata;
 }
 
 private define create_group_instance ();   %  forward decl
@@ -337,6 +455,7 @@ private variable Netcdf_Obj = struct
    group_info,			       %  poiner to Netcdf_Group_Type
    shared_info,			       %  pointer to Netcdf_Shared_Type
    get = &netcdf_get,
+   get_slices = &netcdf_get_slices,
    put = &netcdf_put,
    def_dim = &netcdf_def_dim,
    def_var = &netcdf_def_var,

@@ -690,7 +690,17 @@ static int pop_slice_args (NCid_Type *nc, NCid_Var_Type *ncvar, int is_read,
 
    start = (size_t *)at_start->data;
    count = (size_t *)at_count->data;
-   stride = (at_stride == NULL) ? NULL : (ptrdiff_t *)at_stride->data;
+   if (at_stride == NULL)
+     {
+	/* I have seen netcdf segv when stride is NULL.  So do not rely upon it handling a NULL stride */
+	at_stride = SLang_create_array (_SL_PTRDIFF_T_TYPE, 0, NULL, at_start->dims, 1);
+	if (at_stride == NULL)
+	  goto free_and_return;
+	stride = (ptrdiff_t *)at_stride->data;
+	for (i = 0; i < num_dims; i++)
+	  stride[i] = 1;
+     }
+   else stride = (ptrdiff_t *)at_stride->data;
 
    total = 1;
    for (i = 0; i < num_dims; i++)
@@ -710,7 +720,7 @@ static int pop_slice_args (NCid_Type *nc, NCid_Var_Type *ncvar, int is_read,
 		  goto free_and_return;
 	       }
 	  }
-	stride_i = ((stride == NULL) ? 1 : stride[i]);
+	stride_i = stride[i];
 	if (((stride_i < 0)
 	     && (start[i] < -stride_i * count[i]))
 	    || ((dim_i != 0)
@@ -773,7 +783,7 @@ static void sl_nc_put_vars (NCid_Type *nc, NCid_Var_Type *ncvar)
 	  }
 	start = (size_t *) at_start->data;
 	count = (size_t *) at_count->data;
-	stride = (at_stride == NULL) ? NULL : (ptrdiff_t *) at_stride->data;
+	stride = (ptrdiff_t *) at_stride->data;
      }
 
    if (total != at->num_elements)
@@ -1183,7 +1193,7 @@ static void sl_nc_get_vars (NCid_Type *nc, NCid_Var_Type *ncvar)
    size_t *start, *count;
    ptrdiff_t *stride;
    SLuindex_Type i, num_dims;
-   int ncid, varid, status;
+   int ncid, varid, status, is_scalar;
    nc_type xtype;
    SLtype sltype;
 
@@ -1242,6 +1252,7 @@ static void sl_nc_get_vars (NCid_Type *nc, NCid_Var_Type *ncvar)
 	at_stride = NULL; stride = NULL;
 	at_dims[0] = 1;
 	num_dims = 1;
+	is_scalar = 1;
      }
    else
      {
@@ -1257,11 +1268,12 @@ static void sl_nc_get_vars (NCid_Type *nc, NCid_Var_Type *ncvar)
 
 	start = (size_t *) at_start->data;
 	count = (size_t *) at_count->data;
-	stride = (at_stride == NULL) ? NULL : (ptrdiff_t *) at_stride->data;
+	stride = (ptrdiff_t *) at_stride->data;
 
 	num_dims = at_count->num_elements;
 	for (i = 0; i < num_dims; i++)
 	  at_dims[i] = count[i];
+	is_scalar = 0;
      }
 
    if (NULL == (at = SLang_create_array (sltype, 0, NULL, at_dims, num_dims)))
@@ -1333,7 +1345,7 @@ static void sl_nc_get_vars (NCid_Type *nc, NCid_Var_Type *ncvar)
 	/* drop */
      }
 
-   if (at->num_elements == 1)
+   if (is_scalar)
      (void) SLang_push_value (at->data_type, at->data);
    else
      (void) SLang_push_array (at, 0);

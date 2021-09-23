@@ -2,4 +2,4 @@ Changes since 0.1.0
 
 1.  Added support for reading compound types and scalars.
 2.  Updated the documentation
-
+3.  Added get_slices method; doc updates

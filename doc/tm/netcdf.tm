@@ -143,7 +143,7 @@ Here and in all of the usage messages displayed by the module,
 \exmp{<ncobj>} represents the variable name through which the method
 was invoked.  In this example, it is \exmp{nc}.
 
-\chapter{Limitations}
+\chapter{Limitations and Workarounds}
 
 \sect{netCDF limitations}
 
@@ -152,6 +152,117 @@ write such an array as a single dimensional array with the same number
 of elements.  For example, a 3x7 array will be written as a 21 element
 1-d array.  After reading the attributes value, the \ifun{reshape} function
 may be used to convert it to the desired multi-dimensional shape.
+
+NetCDF supports I/O to subsets of arrays; however, its indexing is limited to
+reading/writing slices of an array via a triplet of \exmp{start},
+\exmp{count}, and \exmp{stride} index specifiers.  In contrast, \slang
+supports a much richer variety of indexing.
+
+To illustrate this, consider the task of clipping an array in a netCDF
+file such that array values less than a threshold value are set to the
+threshold value.  Suppose the array is has the name \exmp{"images"}
+and represents a set of 100 2d images 2048x2048 images and stored as a
+100x2048x2048 cube of 32 bit floating point values.  Values less than
+0 are to be set to 0.  To carry out the clipping operation, it is
+necessary to read in the array to a \slang variable, perform the
+clipping operation, and then write out the array:
+#v+
+  nc = netcdf_open ("images.nc", "w");
+  images = nc.get (images);
+  i = where (images < 0);
+  images[i] = 0;
+  nc.put (images);
+  nc.close ();
+#v-
+Note that this involves writing the entire array back to the netCDF
+file, regardless of whether the values have changed or not.  Ideally
+one would prefer to only update those values in the file that are
+below the threshold.  However, netCDF does not have an equivalent of
+the \exmp{images[i] = 0} statement used above.
+
+This indexing limitation has nothing to do with the dimensionality of
+the netCDF array.  It also applies to simple 1-d array.  For example,
+consider setting the values of every other element of a 100 element
+1-d array X to 0.  This is something that netCDF supports via its
+``start-count-stride'' indexing paradigm:
+#v+
+  zeros = Int_Type[50];    % An array of 50 0s
+  nc.put("X", zeros, [0], [50], [2]);
+#v-
+However, setting the 1st, 3rd, and 9th element of X to 0 is not
+possible since the indices 1, 3, and 9 cannot be specified in the form
+of a single ``start-count-stride'' triplet.
+
+As indicated above, netCDF lacks support for random indexing of
+arrays.  Although the netCDF library supports reading/writing a single
+array element via the C interface \exmp{nc_put/get_var1} functions,
+repeatedly calling these for each value incurs significant overhead
+since netCDF must validate each of its arguments.  For this reason, it
+may be faster to simply to read/write entire arrays or array slices.
+As such, the module does not wrap these functions.
+
+With these considerations in mind, consider the example presented
+above that involved setting elements of an array to 0.  For
+simplicity, let us assume that it is desired to set all of the
+elements of a 500x1024x1024 array to 0.  Since the netCDF library
+does not have a function that sets whole arrays or specified slices to
+a fixed value, it is necessary to create an array of corresponding
+value and write it to the array, e.g.,
+#v+
+   zeros = Int_Type[500,1024,1024];
+   nc.put ("X", zeros);
+#v-
+The obvious downside of this approach is the memory used by the
+auxillary array (\exmp{zeros} in this case), which could be
+arbitrarily large.  Moreover, as discussed in the next section,
+interpreter may not support such a large array.  For this reason, it
+would be better to use a much smaller auxillary array and write it in
+slices.  For example,
+#v+
+   zeros = Int_Type[1024, 1024];
+   start = [0, 0, 0];
+   count = [1, 1024, 1024];
+   for (i = 0; i < 500; i++)
+     {
+        start[0] = i;
+        nc.put ("X", zeros, start, count);
+     }
+#v-
+
+Once again consider the case of a time-series sequence of images
+stored in the netCDF file as an 100x2048x2048 array of 32 bit floats.
+Suppose that the dimension coordinate of the first index is time, and
+it is desire to extract only those images capture during an interval
+\exmp{t0 <= t < t1}:
+#v+
+   nc = netcdf_open ("images.nc", "r");
+   t = nc.get ("time");
+   inds = where (t0 <= t < t1);
+#v-
+Here, \exmp{inds} would be an array whose values correspond to those
+indices of the \exmp{time} array that correspond to the desired range.
+Reading the correponding images can accomplished using the
+``start-count-stride'' netCDF method:
+#v+
+  images = nc.get ("images", [inds[0], 0, 0], [length(inds), 2048, 2048]);
+#v-
+But suppose that each image is tagged with some additional indicator
+that one wants to filter on.  Then in this case, the index array
+\exmp{inds} will unlikely to be a simple range, and would not permit
+indexing via a ``start-count-stride'' triplet.  In this case, one 
+resort to reading the images as individual slices:
+#v+
+   images = Float_Type[length(inds),2048,2048];
+   _for i (0, length(inds)-1, 1)
+      {
+        images[i,*,*] = nc.get ("images", [inds[i], 0, 0], [1, 2048, 2048]);
+      }
+#v-
+Since this can be cumbersome, the module includes a netCDF object
+method called \exmp{.get_slices} that faciliates this type of operation:
+#v+
+   images = nc.get_slices ("images", inds);
+#v-
 
 \sect{\slang limitations}
 
@@ -170,8 +281,8 @@ an array contains 4294967296 elements, which exceeds the maximum
 number supported by the interpreter.  Often such objects have the
 dimensions that have some physical meaning.  For example, this data
 cube might represent a 2048x2048 image of a scene observed 1024 times.
-In this scenario, it might be more natural to read one image and
-process one image from the cube.  For example, the mean of the images
+In this scenario, it might be more natural to read one image at a time
+from the cube and process it.  For example, the mean of the images
 may be compute using:
 #v+
     nt = 1024, nx = 2048, ny = 2048;
