@@ -4,3 +4,6 @@ Changes since 0.1.0
 2.  Updated the documentation
 3.  Added get_slices method; doc updates
 4.  Check to see if NC_PERSIST and NC_MEMORY are defined
+5.  Use nc_put_vara functions instead of nc_put_vars functions when
+    stride is 1 to work-around bugs in some netcdf versions (e.g.,
+    4.6.1).

@@ -783,7 +783,18 @@ static void sl_nc_put_vars (NCid_Type *nc, NCid_Var_Type *ncvar)
 	  }
 	start = (size_t *) at_start->data;
 	count = (size_t *) at_count->data;
-	stride = (ptrdiff_t *) at_stride->data;
+	stride = NULL;
+	if (at_stride != NULL)
+	  {
+	     ptrdiff_t *s = (ptrdiff_t *) at_stride->data;
+	     SLindex_Type i, n = at_stride->num_elements;
+	     for (i = 0; i < n; i++)
+	       {
+		  if (s[i] == 1) continue;
+		  stride = s;
+		  break;
+	       }
+	  }
      }
 
    if (total != at->num_elements)
@@ -802,34 +813,64 @@ static void sl_nc_put_vars (NCid_Type *nc, NCid_Var_Type *ncvar)
    switch (xtype)
      {
       case NC_BYTE:
-	status = nc_put_vars_schar (ncid, varid, start, count, stride, (signed char *)at->data);
+	if (stride != NULL)
+	  status = nc_put_vars_schar (ncid, varid, start, count, stride, (signed char *)at->data);
+	else
+	  status = nc_put_vara_schar (ncid, varid, start, count, (signed char *)at->data);
 	break;
       case NC_UBYTE:
-	status = nc_put_vars_uchar (ncid, varid, start, count, stride, (unsigned char *)at->data);
+	if (stride != NULL)
+	  status = nc_put_vars_uchar (ncid, varid, start, count, stride, (unsigned char *)at->data);
+	else
+	  status = nc_put_vara_uchar (ncid, varid, start, count, (unsigned char *)at->data);
 	break;
       case NC_SHORT:
-	status = nc_put_vars_short (ncid, varid, start, count, stride, (short *)at->data);
+	if (stride != NULL)
+	  status = nc_put_vars_short (ncid, varid, start, count, stride, (short *)at->data);
+	else
+	  status = nc_put_vara_short (ncid, varid, start, count, (short *)at->data);
 	break;
       case NC_USHORT:
-	status = nc_put_vars_ushort (ncid, varid, start, count, stride, (unsigned short *)at->data);
+	if (stride != NULL)
+	  status = nc_put_vars_ushort (ncid, varid, start, count, stride, (unsigned short *)at->data);
+	else
+	  status = nc_put_vara_ushort (ncid, varid, start, count, (unsigned short *)at->data);
 	break;
       case NC_INT:
-	status = nc_put_vars_int (ncid, varid, start, count, stride, (int *)at->data);
+	if (stride != NULL)
+	  status = nc_put_vars_int (ncid, varid, start, count, stride, (int *)at->data);
+	else
+	  status = nc_put_vara_int (ncid, varid, start, count, (int *)at->data);
 	break;
       case NC_UINT:
-	status = nc_put_vars_uint (ncid, varid, start, count, stride, (unsigned int *)at->data);
+	if (stride != NULL)
+	  status = nc_put_vars_uint (ncid, varid, start, count, stride, (unsigned int *)at->data);
+	else
+	  status = nc_put_vara_uint (ncid, varid, start, count, (unsigned int *)at->data);
 	break;
       case NC_INT64:
-	status = nc_put_vars_longlong (ncid, varid, start, count, stride, (long long *)at->data);
+	if (stride != NULL)
+	  status = nc_put_vars_longlong (ncid, varid, start, count, stride, (long long *)at->data);
+	else
+	  status = nc_put_vara_longlong (ncid, varid, start, count, (long long *)at->data);
 	break;
       case NC_UINT64:
-	status = nc_put_vars_ulonglong (ncid, varid, start, count, stride, (unsigned long long *)at->data);
+	if (stride != NULL)
+	  status = nc_put_vars_ulonglong (ncid, varid, start, count, stride, (unsigned long long *)at->data);
+	else
+	  status = nc_put_vara_ulonglong (ncid, varid, start, count, (unsigned long long *)at->data);
 	break;
       case NC_FLOAT:
-	status = nc_put_vars_float (ncid, varid, start, count, stride, (float *)at->data);
+	if (stride != NULL)
+	  status = nc_put_vars_float (ncid, varid, start, count, stride, (float *)at->data);
+	else
+	  status = nc_put_vara_float (ncid, varid, start, count, (float *)at->data);
 	break;
       case NC_DOUBLE:
-	status = nc_put_vars_double (ncid, varid, start, count, stride, (double *)at->data);
+	if (stride != NULL)
+	  status = nc_put_vars_double (ncid, varid, start, count, stride, (double *)at->data);
+	else
+	  status = nc_put_vara_double (ncid, varid, start, count, (double *)at->data);
 	break;
 
       default:
