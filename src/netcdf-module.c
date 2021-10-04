@@ -171,50 +171,6 @@ static void free_ncid_datatype_type (NCid_DataType_Type *dtype)
    SLfree (dtype);
 }
 
-static NCid_DataType_Type *alloc_ncid_datatype_type (int ncid, nc_type xtype, SLtype sltype, int is_sltype)
-{
-   NCid_DataType_Type *dtype;
-   int status;
-   char name[NC_MAX_NAME+1];
-
-   if (NULL == (dtype = (NCid_DataType_Type *) SLmalloc (sizeof (NCid_DataType_Type))))
-     return NULL;
-   memset (dtype, 0, sizeof (NCid_DataType_Type));
-
-   dtype->sltype = sltype;
-   dtype->xtype = xtype;
-   dtype->numrefs = 1;
-   dtype->is_sltype = is_sltype;
-   if (is_sltype) return dtype;
-
-   /* From here on it not an atomic type */
-
-   status = nc_inq_user_type (ncid, xtype, name, &dtype->xsize, &dtype->xbase, &dtype->xnfields, &dtype->xclass);
-   if (status != NC_NOERR)
-     {
-	throw_nc_error ("nc_inq_user_type", xtype);
-	free_ncid_datatype_type (dtype);
-	return NULL;
-     }
-   name[NC_MAX_NAME] = 0;
-   if (NULL == (dtype->xname = SLang_create_slstring (name)))
-     {
-	free_ncid_datatype_type (dtype);
-	return NULL;
-     }
-
-   return dtype;
-}
-
-static int push_ncid_datatype_type (NCid_DataType_Type *dtype)
-{
-   dtype->numrefs++;
-   if (0 == SLclass_push_ptr_obj (NCid_DataType_Type_Id, (VOID_STAR) dtype))
-     return 0;
-   dtype->numrefs--;
-   return -1;
-}
-
 static int map_base_sltype_to_xtype (SLtype s, nc_type *xp)
 {
    switch (s)
@@ -247,6 +203,62 @@ static int map_base_sltype_to_xtype (SLtype s, nc_type *xp)
      }
 
    return 0;
+}
+
+static NCid_DataType_Type *alloc_ncid_datatype_type (int ncid, nc_type xtype, SLtype sltype, int is_sltype)
+{
+   NCid_DataType_Type *dtype;
+   int status;
+   char name[NC_MAX_NAME+1];
+
+   if (NULL == (dtype = (NCid_DataType_Type *) SLmalloc (sizeof (NCid_DataType_Type))))
+     return NULL;
+   memset (dtype, 0, sizeof (NCid_DataType_Type));
+
+   dtype->sltype = sltype;
+   dtype->numrefs = 1;
+   dtype->is_sltype = is_sltype;
+   if (is_sltype)
+     {
+	if (xtype == -1)
+	  {
+	     if (-1 == map_base_sltype_to_xtype (sltype, &xtype))
+	       {
+		  SLfree (dtype);
+		  return NULL;
+	       }
+	  }
+	dtype->xtype = xtype;
+	return dtype;
+     }
+
+   /* From here on it not an atomic type */
+   dtype->xtype = xtype;
+
+   status = nc_inq_user_type (ncid, xtype, name, &dtype->xsize, &dtype->xbase, &dtype->xnfields, &dtype->xclass);
+   if (status != NC_NOERR)
+     {
+	throw_nc_error ("nc_inq_user_type", xtype);
+	free_ncid_datatype_type (dtype);
+	return NULL;
+     }
+   name[NC_MAX_NAME] = 0;
+   if (NULL == (dtype->xname = SLang_create_slstring (name)))
+     {
+	free_ncid_datatype_type (dtype);
+	return NULL;
+     }
+
+   return dtype;
+}
+
+static int push_ncid_datatype_type (NCid_DataType_Type *dtype)
+{
+   dtype->numrefs++;
+   if (0 == SLclass_push_ptr_obj (NCid_DataType_Type_Id, (VOID_STAR) dtype))
+     return 0;
+   dtype->numrefs--;
+   return -1;
 }
 
 static int map_base_xtype_to_sltype (nc_type x, SLtype *sp)
@@ -364,7 +376,7 @@ static int push_ncid_dim_type (NCid_Dim_Type *ncdim)
 
 /*}}}*/
 
-/*{{{ Veriable Type Functions */
+/*{{{ Variable Type Functions */
 
 static void free_ncid_var_type (NCid_Var_Type *ncvar)
 {
@@ -746,6 +758,9 @@ free_and_return:
    return -1;
 }
 
+/* Forward declaration */
+static int put_vars_compound (int ncid, int varid, size_t *start, size_t *count, ptrdiff_t *stride, SLang_Array_Type *at);
+
 /* Usage: _nc_put_vars (start, count, stride, data, ncid, varid) */
 static void sl_nc_put_vars (NCid_Type *nc, NCid_Var_Type *ncvar)
 {
@@ -804,11 +819,17 @@ static void sl_nc_put_vars (NCid_Type *nc, NCid_Var_Type *ncvar)
 	goto free_and_return;
      }
 
-   if (-1 == map_base_sltype_to_xtype (at->data_type, &xtype))
-     goto free_and_return;
-
    ncid = nc->ncid;
    varid = ncvar->var_id;
+
+   if (at->data_type == SLANG_STRUCT_TYPE)
+     {
+	(void) put_vars_compound (ncid, varid, start, count, stride, at);
+	goto free_and_return;
+     }
+
+   if (-1 == map_base_sltype_to_xtype (at->data_type, &xtype))
+     goto free_and_return;
 
    switch (xtype)
      {
@@ -918,6 +939,62 @@ static int get_nc_xclass (int ncid, nc_type xtype, int *xclassp)
 }
 
 
+static int get_compound_field_info (int ncid, int xtype, int idx, char *name,
+				    size_t *field_ofsp, nc_type *field_xtypep, int *ndimsp,
+				    size_t *num_elemsp, SLindex_Type *at_dims)
+{
+   size_t ofs, num_elems;
+   int *dims;
+   nc_type field_xtype;
+   int status, i, ndims;
+
+   status = nc_inq_compound_field (ncid, xtype, idx, name, &ofs, &field_xtype, &ndims, NULL);
+   if (status != NC_NOERR)
+     {
+	throw_nc_error ("nc_inq_compound_field", status);
+	return -1;
+     }
+   if (name == NULL) name = ""; else name[NC_MAX_NAME] = 0;
+
+   if (ndims > SLARRAY_MAX_DIMS)
+     {
+	SLang_verror (SL_LimitExceeded_Error, "slang arrays are currently limited to %d dimensions.  The compound field %s has %d dimensions",
+		      SLARRAY_MAX_DIMS, name, ndims);
+	return -1;
+     }
+   if (field_xtypep != NULL) *field_xtypep = field_xtype;
+   if (field_ofsp != NULL) *field_ofsp = ofs;
+   if (ndimsp != NULL) *ndimsp = ndims;
+
+   if ((at_dims == NULL) && (num_elemsp == NULL))
+     return 0;
+
+   /* otherwise dims is needed */
+
+   if (NULL == (dims = (int *)SLmalloc ((ndims+1) * sizeof(int))))
+     return -1;
+
+   status = nc_inq_compound_field (ncid, xtype, idx, NULL, NULL, NULL, &ndims, dims);
+   if (status != NC_NOERR)
+     {
+	throw_nc_error ("nc_inq_compound_field", status);
+	SLfree (dims);
+	return -1;
+     }
+
+   num_elems = 1;
+   for (i = 0; i < ndims; i++)
+     {
+	if (at_dims != NULL) at_dims[i] = dims[i];
+	num_elems *= dims[i];
+     }
+   if (num_elemsp != NULL) *num_elemsp = num_elems;
+
+   SLfree (dims);
+   return 0;
+}
+
+
 static int get_compound_info (int ncid, nc_type xtype, char ***field_namesp, size_t *nfieldsp, size_t *sizep)
 {
    size_t nfields, size;
@@ -940,17 +1017,12 @@ static int get_compound_info (int ncid, nc_type xtype, char ***field_namesp, siz
    for (i = 0; i < nfields; i++)
      {
 	char name[NC_MAX_NAME+1];
-	size_t ofs;
-	nc_type field_xtype;
 
-	status = nc_inq_compound_field (ncid, xtype, i, name, &ofs, &field_xtype, NULL, NULL);
-	if (status != NC_NOERR)
+	if (-1 == get_compound_field_info (ncid, xtype, i, name, NULL, NULL, NULL, NULL, NULL))
 	  {
-	     throw_nc_error ("nc_inq_compound_field", status);
 	     free_slstring_array (field_names, nfields);
 	     return -1;
 	  }
-	name[NC_MAX_NAME] = 0;
 	if (NULL == (field_names[i] = SLang_create_slstring (name)))
 	  {
 	     free_slstring_array (field_names, nfields);
@@ -970,84 +1042,41 @@ static int push_compound_element (int ncid, nc_type xtype, int idx, unsigned cha
    SLindex_Type at_dims[SLARRAY_MAX_DIMS];
    size_t num_elements, size, ofs, align;
    SLang_Array_Type *at;
-   unsigned char *at_data;
-   int *dims;
    nc_type field_xtype;
-   int i, ndims, status;
+   int ndims, status;
    SLtype sltype;
 
-   status = nc_inq_compound_field (ncid, xtype, idx, name, &ofs, &field_xtype, &ndims, NULL);
-   if (status != NC_NOERR)
-     {
-	throw_nc_error ("nc_inq_compound_field", status);
-	return -1;
-     }
-   name[0] = 0;
-
-   if (ndims > SLARRAY_MAX_DIMS)
-     {
-	SLang_verror (SL_LimitExceeded_Error, "slang arrays are currently limited to %d dimensions.  The compound field %s has %d dimensions",
-		      SLARRAY_MAX_DIMS, name, ndims);
-	return -1;
-     }
-
-   if (NULL == (dims = (int *)SLmalloc ((ndims+1) * sizeof(int))))
+   if (-1 == get_compound_field_info (ncid, xtype, idx, name, &ofs, &field_xtype, &ndims, &num_elements, at_dims))
      return -1;
 
-   status = nc_inq_compound_field (ncid, xtype, idx, NULL, NULL, NULL, &ndims, dims);
-   if (status != NC_NOERR)
-     {
-	throw_nc_error ("nc_inq_compound_field", status);
-	SLfree (dims);
-	return -1;
-     }
-
-   /* Consistency check: Check that the offset of consistent the the module's computed version.
+   /* Consistency check: Check that the offset is consistent with the the module's computed version.
     * If they are not consistent, bail out to avoid a possible BUS error.
     */
    if (-1 == compute_align_and_size (ncid, field_xtype, &align, &size))
-     {
-	SLfree (dims);
-	return -1;
-     }
+     return -1;
 
    if (ofs % align)
      {
 	SLang_verror (SL_RunTime_Error, "compound type %u, field %s, xtype %u: netCDF reports offset=%lu, but module align=%lu",
 		      xtype, name, field_xtype, (unsigned long) ofs, (unsigned long) align);
-	SLfree (dims);
 	return -1;
-     }
-
-   at_data = NULL;
-   num_elements = 1;
-   for (i = 0; i < ndims; i++)
-     {
-	at_data[i] = dims[i];
-	num_elements *= dims[i];
      }
 
    if (field_xtype > NC_MAX_ATOMIC_TYPE)
      {
 	int xclass;
 	if (-1 == get_nc_xclass (ncid, field_xtype, &xclass))
-	  {
-	     SLfree (dims);
-	     return -1;
-	  }
+	  return -1;
 	if (xclass != NC_COMPOUND)
 	  {
 	     SLang_vmessage ("Compound of vlen or opaque types not implemented; setting compound field %s to NULL", name);
-	     SLfree (dims);
 	     return SLang_push_null ();
 	  }
 	sltype = SLANG_STRUCT_TYPE;
      }
    else if (-1 == map_base_xtype_to_sltype (field_xtype, &sltype))
-     {
-	SLfree (dims);
-	return -1;
-     }
+     return -1;
+
 
    if (num_elements == 1)
      at = NULL;
@@ -1055,10 +1084,7 @@ static int push_compound_element (int ncid, nc_type xtype, int idx, unsigned cha
      {
 	at = SLang_create_array (sltype, 0, NULL, at_dims, ndims);
 	if (at == NULL)
-	  {
-	     SLfree (dims);
-	     return -1;
-	  }
+	  return -1;
      }
 
    /* Move the data pointer to the field value location */
@@ -1096,7 +1122,7 @@ static int push_compound_element (int ncid, nc_type xtype, int idx, unsigned cha
 			    status = -1;
 			    break;
 			 }
-		       sp[i] = s;
+		       sp[j] = s;
 		       data += size1;
 		    }
 	       }
@@ -1139,7 +1165,6 @@ static int push_compound_element (int ncid, nc_type xtype, int idx, unsigned cha
 	  }
      }
 
-   SLfree (dims);
    if (at != NULL)
      {
 	if (status == 0)
@@ -1397,6 +1422,158 @@ free_and_return:
    SLang_free_array (at_stride);
    SLang_free_array (at_start);
 }
+
+/* Pop a value from the stack into the data+offset address */
+
+static int compute_compound_align_and_size (int ncid, nc_type xtype, size_t *alignp, size_t *sizep,
+					    size_t *xnfieldsp, size_t **field_offsetsp, nc_type **field_xtypesp,
+					    size_t **field_num_elemsp);
+
+static int pop_compound_element (int ncid, unsigned char *data, int idx, nc_type field_xtype,
+				 size_t field_offset, const char *field_name, size_t field_num_elems)
+{
+   SLang_Array_Type *at;
+   SLtype sltype;
+
+   (void) idx;
+
+   if (field_xtype > NC_MAX_ATOMIC_TYPE)
+     {
+	int xclass;
+	if (-1 == get_nc_xclass (ncid, field_xtype, &xclass))
+	  return -1;
+	if (xclass != NC_COMPOUND)
+	  {
+	     SLang_verror (SL_NotImplemented_Error, "Compound of vlen or opaque types not implemented");
+	     return -1;
+	  }
+	sltype = SLANG_STRUCT_TYPE;
+     }
+   else if (-1 == map_base_xtype_to_sltype (field_xtype, &sltype))
+     return -1;
+
+   if (field_num_elems == 1)
+     at = NULL;
+   else
+     {
+	if (-1 == SLang_pop_array_of_type (&at, sltype))
+	  return -1;
+	if (field_num_elems != at->num_elements)
+	  {
+	     SLang_verror (SL_InvalidParm_Error, "Compound field %s requires %lu elements, %lu provided",
+			   field_name, (unsigned long) field_num_elems, (unsigned long) at->num_elements);
+	     SLang_free_array (at);
+	     return -1;
+	  }
+     }
+
+   data += field_offset;
+   switch (sltype)
+     {
+      case SLANG_STRUCT_TYPE:
+      case SLANG_STRING_TYPE:
+	break;
+
+      default:
+	if (at == NULL)
+	  return SLang_pop_value (sltype, data);
+	memcpy (data, at->data, field_num_elems*at->sizeof_type);
+	SLang_free_array (at);
+	return 0;
+     }
+
+   SLang_verror (SL_NotImplemented_Error, "Compound of compound/string not implemented");
+   return -1;
+}
+
+/* This gets called with at->data_type == SLANG_STRUCT_TYPE */
+static int put_vars_compound (int ncid, int varid, size_t *start, size_t *count, ptrdiff_t *stride, SLang_Array_Type *at)
+{
+   size_t align;
+   SLang_Struct_Type **sp;
+   char **field_names;
+   size_t *field_offsets = NULL, *field_num_elems = NULL;
+   nc_type *field_xtypes = NULL;
+   unsigned char *compound_data, *compound_data1;
+   size_t nfields, size;
+   SLuindex_Type i, num_elements;
+   nc_type xtype;
+   int xclass, status;
+
+   sp = (SLang_Struct_Type **)at->data;
+   num_elements = at->num_elements;
+   for (i = 0; i < num_elements; i++)
+     {
+	if (sp[i] == NULL)
+	  {
+	     SLang_verror (SL_InvalidParm_Error, "A compound array-element cannot be NULL");
+	     return -1;
+	  }
+     }
+
+   if (-1 == get_var_type (ncid, varid, &xtype))
+     return -1;
+
+   if (-1 == get_nc_xclass (ncid, xtype, &xclass))
+     return -1;
+
+   if (xclass != NC_COMPOUND)
+     {
+	SLang_verror (SL_InvalidParm_Error, "Variable is not compound type");
+	return -1;
+     }
+
+   if (-1 == get_compound_info (ncid, xtype, &field_names, &nfields, &size))
+     return -1;
+
+   status = -1;
+
+   if (-1 == compute_compound_align_and_size (ncid, xtype, &align, &size, NULL, &field_offsets, &field_xtypes, &field_num_elems))
+     goto return_status;
+
+   if (NULL == (compound_data = (unsigned char *)SLmalloc(num_elements*size)))
+     goto return_status;
+
+   memset (compound_data, 0, size*num_elements);
+
+   compound_data1 = compound_data;
+   for (i = 0; i < num_elements; i++)
+     {
+	SLang_Struct_Type *s = sp[i];
+	size_t j;
+
+	for (j = 0; j < nfields; j++)
+	  {
+	     if (-1 == SLang_push_struct_field (s, field_names[j]))
+	       goto return_status;
+	     if (-1 == pop_compound_element (ncid, compound_data1, j, field_xtypes[j], field_offsets[j], field_names[j], field_num_elems[j]))
+	       goto return_status;
+	  }
+	compound_data1 += size;
+     }
+
+   if (stride == NULL)
+     status = nc_put_vara(ncid, varid, start, count, compound_data);
+   else
+     status = nc_put_vars (ncid, varid, start, count, stride, compound_data);
+   if (status != NC_NOERR)
+     {
+	throw_nc_error ("put_vars_compound->nc_put_var", status);
+	status = -1;
+     }
+   else status = 0;
+
+   /* drop */
+
+return_status:
+   SLfree (compound_data);
+   free_slstring_array (field_names, nfields);
+   SLfree (field_num_elems);
+   SLfree (field_xtypes);
+   SLfree (field_offsets);
+   return status;
+}
+
 
 /* If there are no unlimited dims, *unlim_dimsp will be NULL. */
 static int get_unlimited_dim_ids (int ncid, int **unlim_dimsp, int *num_unlimp)
@@ -2116,6 +2293,15 @@ static void sl_nc_get_global_att (NCid_Type *nc, const char *name)
    get_att (nc, NC_GLOBAL, name);
 }
 
+static void sl_nc_inq_global_atts (NCid_Type *nc)
+{
+   SLang_Array_Type *at;
+
+   at = get_var_at_atts (nc->ncid, NC_GLOBAL);
+   if (at != NULL)
+     SLang_push_array (at, 1);
+}
+
 static void sl_nc_def_grp (NCid_Type *nc, const char *name)
 {
    int grpid;
@@ -2287,8 +2473,6 @@ static int get_typeids (int ncid, int **typeidsp, int *ntypesp)
 
 /* Compound Types */
 
-static int compute_compound_align_and_size (int ncid, nc_type xtype, size_t *alignp, size_t *sizep);
-
 static int compute_align_and_size (int ncid, nc_type xtype, size_t *alignp, size_t *sizep)
 {
    char name[NC_MAX_NAME+1];
@@ -2336,7 +2520,7 @@ static int compute_align_and_size (int ncid, nc_type xtype, size_t *alignp, size
    switch (xclass)
      {
       case NC_COMPOUND:
-	return compute_compound_align_and_size (ncid, xtype, alignp, sizep);
+	return compute_compound_align_and_size (ncid, xtype, alignp, sizep, NULL, NULL, NULL, NULL);
 
       case NC_ENUM:
 	return compute_align_and_size (ncid, xbase, alignp, sizep);
@@ -2389,7 +2573,9 @@ static int compute_compound_size_and_offsets (int ncid, int num_xtypes, nc_type 
    return 0;
 }
 
-static int compute_compound_align_and_size (int ncid, nc_type xtype, size_t *alignp, size_t *sizep)
+static int compute_compound_align_and_size (int ncid, nc_type xtype, size_t *alignp, size_t *sizep,
+					    size_t *xnfieldsp, size_t **field_offsetsp, nc_type **field_xtypesp,
+					    size_t **field_num_elemsp)
 {
    size_t xnfields, size;
    size_t *field_offsets = NULL;
@@ -2397,6 +2583,10 @@ static int compute_compound_align_and_size (int ncid, nc_type xtype, size_t *ali
    nc_type *field_xtypes = NULL;
    unsigned int i;
    int status, return_status = -1;
+
+   if (field_offsetsp != NULL) *field_offsetsp = NULL;
+   if (field_xtypesp != NULL) *field_xtypesp = NULL;
+   if (field_num_elemsp != NULL) *field_num_elemsp = NULL;
 
    status = nc_inq_compound (ncid, xtype, NULL, &size, &xnfields);
    if (status != NC_NOERR)
@@ -2412,53 +2602,207 @@ static int compute_compound_align_and_size (int ncid, nc_type xtype, size_t *ali
 
    for (i = 0; i < xnfields; i++)
      {
-	size_t num_elems;
-	int *dims;
-	int ndims, j;
-
-	status = nc_inq_compound_field (ncid, xtype, i, NULL, NULL, field_xtypes+i, &ndims, NULL);
-	if (status != NC_NOERR)
-	  {
-	     throw_nc_error ("nc_inq_compound_field", status);
-	     goto free_and_return;
-	  }
-	if (NULL == (dims = (int *)SLmalloc(sizeof(int)*(ndims+1))))
+	if (-1 == get_compound_field_info (ncid, xtype, i, NULL, NULL, field_xtypes+i, NULL, field_num_elems+i, NULL))
 	  goto free_and_return;
-
-	status = nc_inq_compound_field (ncid, xtype, i, NULL, NULL, NULL, &ndims, dims);
-	if (status != NC_NOERR)
-	  {
-	     SLfree (dims);
-	     goto free_and_return;
-	  }
-
-	num_elems = 1;
-	for (j = 0; j < ndims; j++)
-	  num_elems *= dims[j];
-	SLfree (dims);
-	field_num_elems[i] = num_elems;
      }
 
    return_status = compute_compound_size_and_offsets (ncid, xnfields, field_xtypes, field_num_elems,
 						      field_offsets, alignp, sizep);
 
-   if ((return_status == 0) && (size != *sizep))
+   if (return_status == 0)
      {
-	SLang_verror (SL_Application_Error, "Compound size expected to be %lu but computed %lu bytes",
-		      size, *sizep);
-	return_status = -1;
+	if (size == *sizep)
+	  {
+	     if (xnfieldsp != NULL) *xnfieldsp = xnfields;
+	     if (field_offsetsp != NULL)
+	       {
+		  *field_offsetsp = field_offsets;
+		  field_offsets = NULL;
+	       }
+	     if (field_xtypesp != NULL)
+	       {
+		  *field_xtypesp = field_xtypes;
+		  field_xtypes = NULL;
+	       }
+	     if (field_num_elemsp != NULL)
+	       {
+		  *field_num_elemsp = field_num_elems;
+		  field_num_elems = NULL;
+	       }
+	  }
+	else
+	  {
+	     SLang_verror (SL_Application_Error, "Compound size expected to be %lu but computed %lu bytes",
+			   size, *sizep);
+	     return_status = -1;
+	  }
      }
 
    /* drop */
 
 free_and_return:
 
-   SLfree (field_xtypes);
+   SLfree (field_xtypes);	       /* NULL ok */
    SLfree (field_num_elems);
    SLfree (field_offsets);
    return return_status;
 }
 
+/* Usage: _nc_def_compound (field-names, field-types, array-of-array-dims, ncid, name) */
+static void sl_nc_def_compound (NCid_Type *nc, const char *name)
+{
+   SLang_Array_Type *at_dims = NULL, *at_types = NULL, *at_field_names = NULL;
+   nc_type *xtypes = NULL;
+   size_t *offsets = NULL, *num_elems = NULL;
+   char **field_names;
+   size_t total_size, align;
+   SLuindex_Type i, num_fields;
+   nc_type comp_xtype;
+   int ncid, status;
+
+   ncid = nc->ncid;
+
+   if ((-1 == SLang_pop_array_of_type (&at_dims, SLANG_ARRAY_TYPE))
+       || (-1 == SLang_pop_array_of_type (&at_types, NCid_DataType_Type_Id))
+       || (-1 == SLang_pop_array_of_type (&at_field_names, SLANG_STRING_TYPE)))
+     goto free_and_return;
+
+   num_fields = at_dims->num_elements;
+   if ((num_fields != at_types->num_elements)
+       || (num_fields != at_field_names->num_elements)
+       || (num_fields == 0))
+     {
+	SLang_verror (SL_InvalidParm_Error, "_nc_def_compound: The number of fields must be > 0 and the same for all array args");
+	goto free_and_return;
+     }
+
+   if ((NULL == (offsets = (size_t *)SLmalloc (num_fields*sizeof(size_t))))
+       || (NULL == (num_elems = (size_t *)SLmalloc (num_fields*sizeof(size_t))))
+       || (NULL == (xtypes = (nc_type *)SLmalloc (num_fields*sizeof(nc_type)))))
+     goto free_and_return;
+
+   field_names = (char **)at_field_names->data;
+   for (i = 0; i < num_fields; i++)
+     {
+	SLang_Array_Type *at;
+	NCid_DataType_Type *dtype;
+
+	if (field_names[i] == NULL)
+	  {
+	     SLang_verror (SL_InvalidParm_Error, "_nc_def_compound: A compound field name cannot be NULL");
+	     goto free_and_return;
+	  }
+
+	if (NULL == (at = ((SLang_Array_Type **)at_dims->data)[i]))
+	  num_elems[i] = 1;
+	else
+	  {
+	     SLang_Array_Type *bt;
+	     size_t num;
+	     int *dims, *dims_max;
+
+	     if (at->num_elements == 0)
+	       {
+		  SLang_verror (SL_InvalidParm_Error, "_nc_def_compound: The dimension of field %s cannot be 0", field_names[i]);
+		  goto free_and_return;
+	       }
+	     bt = NULL;
+	     dims = (int *)at->data;
+	     if (at->data_type != SLANG_INT_TYPE)
+	       {
+		  /* Make sure that we can typecast this to an int type before defining the compound */
+		  if ((-1 == SLang_push_array (at, 0))
+		      || (-1 == SLang_pop_array_of_type (&bt, SLANG_INT_TYPE)))
+		    goto free_and_return;
+		  dims = (int *)bt->data;
+	       }
+	     num = 1;
+	     dims_max = dims + at->num_elements;
+	     while (dims < dims_max)
+	       {
+		  if (*dims <= 0)
+		    {
+		       SLang_verror (SL_InvalidParm_Error, "_nc_def_compound: The dimension of field %s must be greater than 0", field_names[i]);
+		       if (bt != NULL) SLang_free_array (bt);
+		       goto free_and_return;
+		    }
+		  num = num * (size_t) *dims;
+		  dims++;
+	       }
+	     num_elems[i] = num;
+	     if (bt != NULL) SLang_free_array (bt);
+	  }
+	dtype = ((NCid_DataType_Type **)at_types->data)[i];
+	if (dtype == NULL)
+	  {
+	     SLang_verror (SL_InvalidParm_Error, "_nc_def_compound: No data type for field %s specified", field_names[i]);
+	     goto free_and_return;
+	  }
+	if (dtype->is_sltype)
+	  {
+	     if (-1 == map_base_sltype_to_xtype (dtype->sltype, xtypes + i))
+	       goto free_and_return;
+	  }
+	else xtypes[i] = dtype->xtype;
+     }
+
+   if (-1 == compute_compound_size_and_offsets (ncid, num_fields, xtypes, num_elems,
+						offsets, &align, &total_size))
+     goto free_and_return;
+
+   status = nc_def_compound (ncid, total_size, name, &comp_xtype);
+   if (status != NC_NOERR)
+     {
+	throw_nc_error ("nc_def_compound", status);
+	goto free_and_return;
+     }
+
+   for (i = 0; i < num_fields; i++)
+     {
+	SLang_Array_Type *at;
+	if (num_elems[i] == 1)
+	  {
+	     status = nc_insert_compound (ncid, comp_xtype, field_names[i], offsets[i], xtypes[i]);
+	     if (status != NC_NOERR)
+	       {
+		  throw_nc_error ("nc_insert_compound", status);
+		  goto free_and_return;
+	       }
+	     continue;
+	  }
+
+	at = ((SLang_Array_Type **)at_dims->data)[i];   /* not NULL per above loop */
+	if (at->data_type == SLANG_INT_TYPE)
+	  status = nc_insert_array_compound (ncid, comp_xtype, field_names[i], offsets[i], xtypes[i], at->num_dims, (int *)at->data);
+	else
+	  {
+	     if ((-1 == SLang_push_array (at, 0))
+		 || (-1 == SLang_pop_array_of_type (&at, SLANG_INT_TYPE)))
+	       goto free_and_return;
+
+	     status = nc_insert_array_compound (ncid, comp_xtype, field_names[i], offsets[i], xtypes[i], at->num_dims, (int *)at->data);
+	     SLang_free_array (at);
+	  }
+	if (status != NC_NOERR)
+	  {
+	     throw_nc_error ("nc_insert_array_compound", status);
+	     goto free_and_return;
+	  }
+     }
+
+   (void) push_nc_datatype (ncid, comp_xtype);
+
+   /* drop */
+
+free_and_return:
+
+   SLfree (xtypes);
+   SLfree (num_elems);
+   SLfree (offsets);
+   SLang_free_array (at_field_names);
+   SLang_free_array (at_types);
+   SLang_free_array (at_dims);
+}
 
 
 #define NCID_DUMMY ((SLtype)-1)
@@ -2482,6 +2826,7 @@ static SLang_Intrin_Fun_Type Module_Intrinsics [] =
    MAKE_INTRINSIC_1("_nc_close", sl_nc_close, V, NCID_DUMMY),
    MAKE_INTRINSIC_3("_nc_def_dim", sl_nc_def_dim, V, NCID_DUMMY, S, IA),
    MAKE_INTRINSIC_0("_nc_def_var", sl_nc_def_var, V),
+   MAKE_INTRINSIC_2("_nc_def_compound", sl_nc_def_compound, V, NCID_DUMMY, S),
    /* MAKE_INTRINSIC_2("_nc_put_var", sl_nc_put_var, V, NCID_DUMMY, NCID_VAR_DUMMY), */
    MAKE_INTRINSIC_2("_nc_put_vars", sl_nc_put_vars, V, NCID_DUMMY, NCID_VAR_DUMMY),
    MAKE_INTRINSIC_2("_nc_get_vars", sl_nc_get_vars, V, NCID_DUMMY, NCID_VAR_DUMMY),
@@ -2493,6 +2838,7 @@ static SLang_Intrin_Fun_Type Module_Intrinsics [] =
    MAKE_INTRINSIC_2("_nc_inq_var", sl_nc_inq_var, V, NCID_DUMMY, NCID_VAR_DUMMY),
    MAKE_INTRINSIC_2("_nc_inq_varname", sl_nc_inq_varname, V, NCID_DUMMY, NCID_VAR_DUMMY),
    MAKE_INTRINSIC_2("_nc_inq_varshape", sl_nc_inq_varshape, V, NCID_DUMMY, NCID_VAR_DUMMY),
+   MAKE_INTRINSIC_1("_nc_inq_global_atts", sl_nc_inq_global_atts, V, NCID_DUMMY),
 
    MAKE_INTRINSIC_3("_nc_put_att", sl_nc_put_att, V, NCID_DUMMY, NCID_VAR_DUMMY, S),
    MAKE_INTRINSIC_2("_nc_put_global_att", sl_nc_put_global_att, V, NCID_DUMMY, S),
@@ -2600,7 +2946,8 @@ static int cl_ncid_datatype_pop (SLtype type, void *ptr)
      {
 	if (-1 == SLang_pop_datatype (&sltype))
 	  return -1;
-	if (NULL == (dtype = alloc_ncid_datatype_type (-1, 0, sltype, 1)))
+
+	if (NULL == (dtype = alloc_ncid_datatype_type (-1, -1, sltype, 1)))
 	  return -1;
      }
    else if (-1 == SLclass_pop_ptr_obj (type, (void **)&dtype))
@@ -2658,6 +3005,34 @@ static char *cl_ncid_datatype_string (SLtype type, void *ptr)
    return str;
 }
 
+static int cl_sltype_to_ncid_datatype (SLtype a_type, VOID_STAR ap, SLuindex_Type na,
+				       SLtype b_type, VOID_STAR bp)
+{
+   SLtype *sltypes;
+   NCid_DataType_Type **dtypes;
+   SLuindex_Type i;
+
+   (void) a_type; (void) b_type;
+   sltypes = (SLtype *)ap;
+   dtypes = (NCid_DataType_Type **)bp;
+
+   for (i = 0; i < na; i++)
+     {
+	if (NULL != (dtypes[i] = alloc_ncid_datatype_type (-1, -1, sltypes[i], 1)))
+	  continue;
+
+	while (i != 0)
+	  {
+	     i--;
+	     free_ncid_datatype_type (dtypes[i]);
+	     dtypes[i] = NULL;
+	  }
+	return -1;
+     }
+
+   return 1;
+}
+
 static int register_types (void)
 {
    SLang_Class_Type *cl;
@@ -2705,7 +3080,7 @@ static int register_types (void)
 
    if (NCid_DataType_Type_Id == 0)
      {
-	if (NULL == (cl = SLclass_allocate_class ("NetCDF_DataType")))
+	if (NULL == (cl = SLclass_allocate_class ("NetCDF_DataType_Type")))
 	  return -1;
 	(void) SLclass_set_destroy_function (cl, cl_ncid_datatype_type_destroy);
 	(void) SLclass_set_push_function (cl, cl_ncid_datatype_type_push);
@@ -2714,6 +3089,7 @@ static int register_types (void)
 	if (-1 == SLclass_register_class (cl, SLANG_VOID_TYPE, sizeof (NCid_DataType_Type), SLANG_CLASS_TYPE_PTR))
 	  return -1;
 	NCid_DataType_Type_Id = SLclass_get_class_id (cl);
+	(void) SLclass_add_typecast (SLANG_DATATYPE_TYPE, NCid_DataType_Type_Id, cl_sltype_to_ncid_datatype, 1);
 	if (-1 == SLclass_patch_intrin_fun_table1 (Module_Intrinsics, NCID_DATATYPE_DUMMY, NCid_DataType_Type_Id))
 	  return -1;
      }

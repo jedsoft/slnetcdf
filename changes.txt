@@ -7,3 +7,4 @@ Changes since 0.1.0
 5.  Use nc_put_vara functions instead of nc_put_vars functions when
     stride is 1 to work-around bugs in some netcdf versions (e.g.,
     4.6.1).
+6.  Added put_slices method and writing compound types

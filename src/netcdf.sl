@@ -152,6 +152,43 @@ private define inc_counter (c, cmax, n)
    return 0;
 }
 
+% This function maps rubber ranges such as [*] or [5:*] to non-rubber
+% ranges
+private define adjust_fixed_indices (var_shape, fixed_index_list, fixed_dims)
+{
+   if (max(fixed_dims) >= length (var_shape))
+     throw InvalidParmError, "Invalid dims qualifier for slice";
+
+   variable new_index_list = {}, new_fixed_dims = Int_Type[0];
+   variable max_indices = var_shape[fixed_dims];
+   _for (0, length (fixed_index_list)-1, 1)
+     {
+	variable i = ();
+	variable idx = fixed_index_list[i];
+	if ((length (idx) == 0) || any (idx < 0))
+	  {
+	     % we have some sort of rubber range, e.g., [*], or [5:].
+	     try
+	       {
+		  variable new_idx = [0:max_indices[i]-1];
+		  idx = new_idx[idx];
+		  if (_eqs (new_idx, idx))
+		    {
+		       % This index is equivalent to [*].  Omit it.
+		       continue;
+		    }
+	       }
+	     catch AnyError:
+	       throw IndexError, "slice index $i is is invalid for the variable's shape"$;
+	  }
+	list_append (new_index_list, idx);
+	new_fixed_dims = [new_fixed_dims, fixed_dims[i]];
+     }
+
+   return new_index_list, new_fixed_dims;
+}
+
+
 private define netcdf_get_slices ()
 {
    if (_NARGS < 3)
@@ -167,7 +204,6 @@ private define netcdf_get_slices ()
    (ncobj, ncid, varid, varname, var_shape) = pop_ncobj_var_info ();
    % varname = A, var_shape = [n0, n1, n2, n3]
 
-   variable out_shape = @var_shape; % [n0, n1, n2, n3]
    variable fixed_dims = qualifier ("dims", [0:length(fixed_index_list)-1]);
    % dims = [1, 2]
    variable nfixed_dims = length(fixed_dims); % 2
@@ -175,6 +211,13 @@ private define netcdf_get_slices ()
      {
 	throw InvalidParmError, "Expected the dims qualifier to have a length equal to the number of slice indices";
      }
+
+   (fixed_index_list, fixed_dims) = adjust_fixed_indices (var_shape, fixed_index_list, fixed_dims);
+   nfixed_dims = length (fixed_dims);
+   if (nfixed_dims == 0)
+     return ncobj.get (varname);
+
+   variable out_shape = @var_shape; % [n0, n1, n2, n3]
 
    variable i, j, idx;
    variable counter = Int_Type[nfixed_dims];  % [0, 0]
@@ -207,7 +250,7 @@ private define netcdf_get_slices ()
      {
 	start[fixed_dims] = [__push_list (fixed_index_list)];
 	outdata = _nc_get_vars (start, count, NULL, ncid, varid);
-	if (final_out_shape == NULL) return outdata[0];
+	if (final_out_shape == NULL) return outdata[[0:]][0];   %  maps X[0,0,...0] to [X[0]] to X[0]
 	reshape (outdata, final_out_shape);
 	return outdata;
      }
@@ -238,9 +281,91 @@ private define netcdf_get_slices ()
      }
    while (inc_counter (counter, counter_max, nfixed_dims));
 
-   if (final_out_shape == NULL) return outdata;
+   if (final_out_shape == NULL) return outdata[[0:]][0];   %  maps X[0,0,...0] to [X[0]] to X[0]
    reshape (outdata, final_out_shape);
    return outdata;
+}
+
+private define netcdf_put_slices ()
+{
+   if (_NARGS < 4)
+     usage ("<ncobj>.put_slices(varname, i [,j ...], data ; dims=[dim_i, ...]");
+
+   % The comments below are given in the context of a variable V whose shape
+   % is [n0, n1, n2, n3] and it is desired to put the data in the subarray
+   % [*, i1, i2, *] where i1 and i2 are index-arrays.  The resulting
+   % array B will have the shape [n0, length(i1), length(i2), n3]
+
+   variable data = ();
+   variable fixed_index_list = __pop_list (_NARGS-3);   %  {i1, i2}
+   variable ncobj, ncid, varid, varname, var_shape;
+   (ncobj, ncid, varid, varname, var_shape) = pop_ncobj_var_info ();
+   % varname = A, var_shape = [n0, n1, n2, n3]
+
+   variable fixed_dims = qualifier ("dims", [0:length(fixed_index_list)-1]);
+   % dims = [1, 2]
+   variable nfixed_dims = length(fixed_dims); % 2
+   if (nfixed_dims != length (fixed_index_list))
+     {
+	throw InvalidParmError, "Expected the dims qualifier to have a length equal to the number of slice indices";
+     }
+
+   (fixed_index_list, fixed_dims) = adjust_fixed_indices (var_shape, fixed_index_list, fixed_dims);
+   nfixed_dims = length (fixed_dims);
+   if (nfixed_dims == 0)
+     return ncobj.put (varname, data);
+
+   variable in_shape = @var_shape;
+   variable i, j, idx;
+   variable counter = Int_Type[nfixed_dims];  % [0, 0]
+   variable counter_max = Int_Type[nfixed_dims]; % [0, 0]
+   _for i (0, nfixed_dims-1, 1)
+     {
+	idx = fixed_index_list[i];
+	variable n_i = length (idx);  % n_0,1 = length(i1,i2)
+	counter_max[i] = n_i-1;
+	in_shape[fixed_dims[i]] = n_i;
+     }
+
+   % Now counter_max = [length(i1)-1, length(i2)-1]
+   % in_shape = [n0, length(i1), length(i2), n3]
+
+   variable start = Int_Type[length (var_shape)];   %  start = [0, 0, 0, 0]
+   variable count = @var_shape;	       %  count = [n0, n1, n2, n3]
+   count[fixed_dims] = 1;		       %  count[[1,2]] = 1 ==> count = [n0, 1, 1, n3]
+
+   % If only a single slice is to be put, do that now and return.
+   if (all(counter_max == 0))
+     {
+	start[fixed_dims] = [__push_list (fixed_index_list)];
+	_nc_put_vars (start, count, NULL, data, ncid, varid);
+	return;
+     }
+   variable data_index_list = {};
+   _for i (0, length (var_shape)-1, 1)
+     {
+	list_append (data_index_list, [*]);
+     }
+
+   variable data_shape = array_shape (data);
+   try
+     {
+	reshape (data, in_shape);
+	do
+	  {
+	     _for i (0, nfixed_dims-1, 1)
+	       {
+		  idx = fixed_dims[i];
+		  j = counter[i];
+		  data_index_list[idx] = [j];
+		  start[idx] = fixed_index_list[i][j];
+	       }
+	     % start = [0, i1[counter[0]], i2[counter[1]], 0];
+	     _nc_put_vars (start, count, NULL, data[__push_list(data_index_list)], ncid, varid);
+	  }
+	while (inc_counter (counter, counter_max, nfixed_dims));
+     }
+   finally: reshape(data, data_shape);
 }
 
 private define create_group_instance ();   %  forward decl
@@ -274,6 +399,16 @@ private define netcdf_def_dim ()
    ncobj.put (name, val);
 }
 
+private define map_string_to_type (ncobj, s)
+{
+   if (typeof(s) != String_Type) return s;
+   variable user_types = ncobj.shared_info.user_types;
+   if (assoc_key_exists (user_types, s))
+     return user_types[s];
+
+   throw InvalidParmError, "Unable to map $s to a NetCDF_DataType"$;
+}
+
 private define netcdf_def_var ()
 {
    variable ncobj, name, type, dims;
@@ -303,6 +438,9 @@ private define netcdf_def_var ()
 	  throw InvalidParmError, "Dimension name `${dim_i}' does not exist"$;
 	dimids[i] = dimid;
      }
+
+   type = map_string_to_type (ncobj, type);
+
    varids[name] = _nc_def_var (ncid, name, type, dimids);
 }
 
@@ -358,6 +496,53 @@ private define netcdf_close (ncobj)
    ncobj.group_info = NULL;
 }
 
+private define netcdf_def_compound ()
+{
+   if (_NARGS != 3)
+     {
+	_pop_n (_NARGS);
+	usage ("<ncobj>.def_compound (name, Struct_Type)");
+     }
+   variable ncobj, name, s;
+   (ncobj, name, s) = ();
+   variable group_info = ncobj.group_info;
+   variable ncid = group_info.ncid;
+   variable shared_info = ncobj.shared_info;
+
+   if (assoc_key_exists (shared_info.user_types, name))
+     {
+	throw DuplicateDefinitionError, "netCDF type `$name' already exists";
+     }
+
+#if (0)
+   if (_nc_user_type_exists (ncid, name))
+#endif
+
+   variable
+     field_names = get_struct_field_names (s),
+     i, n = length (field_names),
+     field_types = NetCDF_DataType_Type[n],
+     field_dims = Array_Type[n];
+
+   _for i (0, n-1, 1)
+     {
+	variable field_name = field_names[i];
+	variable val = get_struct_field (s, field_name);
+	if (typeof (val) == Array_Type)
+	  {
+	     field_dims[i] = array_shape (val);
+	     val = _typeof (val);
+	  };
+	variable val_type = typeof(val);
+	if ((val_type != DataType_Type) && (val_type != NetCDF_DataType_Type))
+	  throw InvalidParmError, sprintf ("Expected compound field `%S' value to be a datatype", field_names[i]);
+	field_types[i] = val;     %  implicit typecast
+     }
+
+   variable dtype = _nc_def_compound (field_names, field_types, field_dims, group_info.ncid, name);
+   shared_info.user_types[name] = dtype;
+}
+
 private define netcdf_info ()
 {
    if (_NARGS != 1)
@@ -370,7 +555,7 @@ private define netcdf_info ()
    variable shared_info = ncobj.shared_info, group_info = ncobj.group_info;
    variable ncid = group_info.ncid;
 
-   variable name, id, i, n, names;     %  generic vars used below
+   variable name, id, i, n, names, val;     %  generic vars used below
 
    variable str = "";
    str = str + sprintf ("group-name: %S\n", group_info.group_name);
@@ -386,6 +571,17 @@ private define netcdf_info ()
 	else
 	  str = str + sprintf ("\t%S = %S;\n", name, len);
      }
+
+   str = str + "Group attributes:\n";
+   try
+     {
+	foreach name (_nc_inq_global_atts (ncid))
+	  {
+	     val = _nc_get_global_att (ncid, name);
+	     str = str + sprintf ("\t%s = %S\n", name, val);
+	  }
+     }
+   catch AnyError;
 
    str = str + "variables:\n";
    foreach id (group_info.varids) using ("values")
@@ -414,7 +610,8 @@ private define netcdf_info ()
 	     str = str + "\tAttributes:\n";
 	     foreach name (varatts)
 	       {
-		  str = str + sprintf ("\t\t%s\n", name);
+		  val = _nc_get_att (ncid, id, name);
+		  str = str + sprintf ("\t\t%s=%S\n", name, val);
 	       }
 	  }
      }
@@ -424,6 +621,7 @@ private define netcdf_info ()
      {
 	str = str + sprintf ("\t%s;\n", name);
      }
+
    () = fputs (str, stdout);
 }
 
@@ -443,7 +641,7 @@ private variable Netcdf_Group_Type = struct
 private variable Netcdf_Shared_Type = struct
 {
    root_ncid,			       %  ncdid of the root groupd
-%   dimids,			       %  dimids are global to all groups
+   user_types,			       %  global to all groups
    groups,			       %  assoc array of Netcdf_Group_Type  
 };
 
@@ -456,12 +654,14 @@ private variable Netcdf_Obj = struct
    shared_info,			       %  pointer to Netcdf_Shared_Type
    get = &netcdf_get,
    get_slices = &netcdf_get_slices,
+   put_slices = &netcdf_put_slices,
    put = &netcdf_put,
    def_dim = &netcdf_def_dim,
    def_var = &netcdf_def_var,
    put_att = &netcdf_put_att,
    get_att = &netcdf_get_att,
    def_grp = &netcdf_def_grp,
+   def_compound  = &netcdf_def_compound,
    subgrps = &netcdf_subgrps,
    group = &netcdf_group,
    info = &netcdf_info,
@@ -684,6 +884,7 @@ Methods:\n\
 
    %shared_info.dimids = Assoc_Type[NetCDF_Dim_Type];
    shared_info.groups = Assoc_Type[Struct_Type];
+   shared_info.user_types = Assoc_Type[NetCDF_DataType_Type];
    shared_info.root_ncid = ncid;
 
    return create_new_group_instance (shared_info, ncid, "/");
