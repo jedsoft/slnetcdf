@@ -457,12 +457,28 @@ private define netcdf_put_att ()
 	usage ("<ncobj>.put_att([varname,] attname, value);");
      }
 
+   variable dtype = _typeof (value);
+   if (_is_struct_type (value))
+     {
+	dtype = qualifier ("type");
+	if (dtype == NULL)
+	  usage ("put_att method require type qualifier for compound attributes");
+	if (typeof (dtype) == String_Type)
+	  {
+	     ifnot (assoc_key_exists (ncobj.shared_info.user_types, dtype))
+	       {
+		  throw TypeMismatchError, "Unknown user-type $dtype"$;
+	       }
+	     dtype = ncobj.shared_info.user_types[dtype];
+	  }
+     }
+
    variable ncid = ncobj.group_info.ncid;
    if (varname == NULL)
-     return _nc_put_global_att (value, ncid, attname);
+     return _nc_put_global_att (value, ncid, attname, dtype);
 
    variable varid = get_varid (ncobj, varname);
-   _nc_put_att (value, ncid, varid, attname);
+   _nc_put_att (value, ncid, varid, attname, dtype);
 }
 
 private define netcdf_get_att ()
@@ -498,12 +514,12 @@ private define netcdf_close (ncobj)
 
 private define netcdf_def_compound ()
 {
+   variable ncobj, name, s;
    if (_NARGS != 3)
      {
 	_pop_n (_NARGS);
-	usage ("<ncobj>.def_compound (name, Struct_Type)");
+	usage ("<ncobj>.def_compound (name, Struct_Type");
      }
-   variable ncobj, name, s;
    (ncobj, name, s) = ();
    variable group_info = ncobj.group_info;
    variable ncid = group_info.ncid;
@@ -515,7 +531,7 @@ private define netcdf_def_compound ()
      }
 
 #if (0)
-   if (_nc_user_type_exists (ncid, name))
+   if (_nc_user_type_exists (ncid, name));
 #endif
 
    variable
@@ -528,14 +544,25 @@ private define netcdf_def_compound ()
      {
 	variable field_name = field_names[i];
 	variable val = get_struct_field (s, field_name);
-	if (typeof (val) == Array_Type)
+	variable val_type = typeof (val);
+	if (val_type == Array_Type)
 	  {
 	     field_dims[i] = array_shape (val);
 	     val = _typeof (val);
-	  };
-	variable val_type = typeof(val);
+	  }
+	else if (val_type == List_Type)
+	  {
+	     % val = { DataType|string [,dims...]}
+	     if (length (val) > 1)
+	       field_dims[i] = [__push_list (val[[1:]])];
+	     val = map_string_to_type (ncobj, val[0]);
+	  }
+	else
+	  val = map_string_to_type (ncobj, val);
+
+	val_type = typeof (val);
 	if ((val_type != DataType_Type) && (val_type != NetCDF_DataType_Type))
-	  throw InvalidParmError, sprintf ("Expected compound field `%S' value to be a datatype", field_names[i]);
+	  throw InvalidParmError, sprintf ("Expected compound field `%S' value to be a datatype, found %S", field_names[i], val_type);
 	field_types[i] = val;     %  implicit typecast
      }
 
@@ -630,6 +657,11 @@ private define netcdf_subgrps (ncobj)
    return _nc_inq_grps (ncobj.group_info.ncid);
 }
 
+private define netcdf_typeid (ncobj, name)
+{
+   return map_string_to_type (ncobj, name);
+}
+
 private variable Netcdf_Group_Type = struct
 {
    ncid,
@@ -662,6 +694,7 @@ private variable Netcdf_Obj = struct
    get_att = &netcdf_get_att,
    def_grp = &netcdf_def_grp,
    def_compound  = &netcdf_def_compound,
+   typeid = &netcdf_typeid,
    subgrps = &netcdf_subgrps,
    group = &netcdf_group,
    info = &netcdf_info,

@@ -148,7 +148,7 @@ typedef struct
 {
    int is_sltype;
    SLtype sltype;
-   nc_type xtype;
+   nc_type xtype;		       /* always valid */
 
    /* These values are from nc_inq_user_type */
    char *xname;
@@ -168,6 +168,8 @@ static void free_ncid_datatype_type (NCid_DataType_Type *dtype)
 	dtype->numrefs--;
 	return;
      }
+   if (dtype->xname != NULL)
+     SLang_free_slstring (dtype->xname);
    SLfree (dtype);
 }
 
@@ -325,9 +327,11 @@ static int pop_nc_datatype (nc_type *xp)
      return -1;
 
    status = 0;
+#if 0
    if (dtype->is_sltype)
      status = map_base_sltype_to_xtype (dtype->sltype, xp);
    else
+#endif
      *xp = dtype->xtype;
 
    free_ncid_datatype_type (dtype);
@@ -758,8 +762,171 @@ free_and_return:
    return -1;
 }
 
+static int get_var_type (int ncid, int varid, nc_type *xtypep)
+{
+   int status;
+
+   status = nc_inq_vartype (ncid, varid, xtypep);
+   if (status == NC_NOERR) return 0;
+   throw_nc_error ("nc_inq_vartype", status);
+   return -1;
+}
+
+static int get_nc_xclass (int ncid, nc_type xtype, int *xclassp)
+{
+   int status = nc_inq_user_type (ncid, xtype, NULL, NULL, NULL, NULL, xclassp);
+   if (status != NC_NOERR)
+     {
+	throw_nc_error ("nc_inq_user_type", xtype);
+	return -1;
+     }
+   return 0;
+}
+
+
+typedef struct
+{
+   /* Basic information -- set by init_compound_info */
+   size_t size;			       /* total size of the compound */
+   size_t nfields;
+   char **field_names;
+   nc_type xtype;
+
+   /* Full information */
+   size_t align;
+   size_t *field_offsets;
+   size_t *field_num_elems;	       /* number of elements in each field */
+   nc_type *field_xtypes;
+}
+Compound_Info_Type;
+
+static void free_compound_info (Compound_Info_Type *cinfo)
+{
+   if (cinfo->field_names != NULL)
+     free_slstring_array (cinfo->field_names, cinfo->nfields);
+   SLfree (cinfo->field_num_elems);	       /* NULL ok */
+   SLfree (cinfo->field_xtypes);	       /* NULL ok */
+   SLfree (cinfo->field_offsets);	       /* NULL ok */
+}
+
 /* Forward declaration */
-static int put_vars_compound (int ncid, int varid, size_t *start, size_t *count, ptrdiff_t *stride, SLang_Array_Type *at);
+static int compute_compound_align_and_size (int ncid, nc_type xtype, size_t *alignp, size_t *sizep,
+					    size_t *xnfieldsp, size_t **field_offsetsp, nc_type **field_xtypesp,
+					    size_t **field_num_elemsp);
+
+static int get_compound_field_info (int ncid, int xtype, int idx, char *name,
+				    size_t *field_ofsp, nc_type *field_xtypep, int *ndimsp,
+				    size_t *num_elemsp, SLindex_Type *at_dims)
+{
+   size_t ofs, num_elems;
+   int *dims;
+   nc_type field_xtype;
+   int status, i, ndims;
+
+   status = nc_inq_compound_field (ncid, xtype, idx, name, &ofs, &field_xtype, &ndims, NULL);
+   if (status != NC_NOERR)
+     {
+	throw_nc_error ("nc_inq_compound_field", status);
+	return -1;
+     }
+   if (name == NULL) name = ""; else name[NC_MAX_NAME] = 0;
+
+   if (ndims > SLARRAY_MAX_DIMS)
+     {
+	SLang_verror (SL_LimitExceeded_Error, "slang arrays are currently limited to %d dimensions.  The compound field %s has %d dimensions",
+		      SLARRAY_MAX_DIMS, name, ndims);
+	return -1;
+     }
+   if (field_xtypep != NULL) *field_xtypep = field_xtype;
+   if (field_ofsp != NULL) *field_ofsp = ofs;
+   if (ndimsp != NULL) *ndimsp = ndims;
+
+   if ((at_dims == NULL) && (num_elemsp == NULL))
+     return 0;
+
+   /* otherwise dims is needed */
+
+   if (NULL == (dims = (int *)SLmalloc ((ndims+1) * sizeof(int))))
+     return -1;
+
+   status = nc_inq_compound_field (ncid, xtype, idx, NULL, NULL, NULL, &ndims, dims);
+   if (status != NC_NOERR)
+     {
+	throw_nc_error ("nc_inq_compound_field", status);
+	SLfree (dims);
+	return -1;
+     }
+
+   num_elems = 1;
+   for (i = 0; i < ndims; i++)
+     {
+	if (at_dims != NULL) at_dims[i] = dims[i];
+	num_elems *= dims[i];
+     }
+   if (num_elemsp != NULL) *num_elemsp = num_elems;
+
+   SLfree (dims);
+   return 0;
+}
+
+
+static int init_compound_info (int ncid, nc_type xtype, Compound_Info_Type *cinfo, int full_info)
+{
+   size_t nfields, size;
+   char **field_names;
+   unsigned int i;
+   int status;
+
+   memset (cinfo, 0, sizeof(Compound_Info_Type));
+
+   status = nc_inq_compound (ncid, xtype, NULL, &size, &nfields);
+   if (status != NC_NOERR)
+     {
+	throw_nc_error ("nc_inq_compound", status);
+	return -1;
+     }
+
+   if (NULL == (field_names = (char **)SLcalloc (nfields, sizeof(char *))))
+     return -1;
+
+   for (i = 0; i < nfields; i++)
+     {
+	char name[NC_MAX_NAME+1];
+
+	if (-1 == get_compound_field_info (ncid, xtype, i, name, NULL, NULL, NULL, NULL, NULL))
+	  {
+	     free_slstring_array (field_names, nfields);
+	     return -1;
+	  }
+
+	if (NULL == (field_names[i] = SLang_create_slstring (name)))
+	  {
+	     free_slstring_array (field_names, nfields);
+	     return -1;
+	  }
+     }
+
+   cinfo->xtype = xtype;
+   cinfo->nfields = nfields;
+   cinfo->field_names = field_names;
+   cinfo->size = size;
+
+   if (full_info == 0) return 0;
+
+   if (-1 == compute_compound_align_and_size (ncid, xtype, &cinfo->align, &size, &nfields,
+					      &cinfo->field_offsets, &cinfo->field_xtypes, &cinfo->field_num_elems))
+     {
+	free_compound_info (cinfo);
+	return -1;
+     }
+
+   return 0;
+}
+
+
+/* Forward declaration */
+static int put_compound (int ncid, int varid, nc_type xtype, size_t *start, size_t *count, ptrdiff_t *stride,
+			 SLang_Array_Type *at, const char *attr_name);
 
 /* Usage: _nc_put_vars (start, count, stride, data, ncid, varid) */
 static void sl_nc_put_vars (NCid_Type *nc, NCid_Var_Type *ncvar)
@@ -824,9 +991,22 @@ static void sl_nc_put_vars (NCid_Type *nc, NCid_Var_Type *ncvar)
 
    if (at->data_type == SLANG_STRUCT_TYPE)
      {
-	(void) put_vars_compound (ncid, varid, start, count, stride, at);
+	int xclass;
+
+	if ((-1 == get_var_type (ncid, varid, &xtype))
+	    || (-1 == get_nc_xclass (ncid, xtype, &xclass)))
+	  goto free_and_return;
+
+	if (xclass != NC_COMPOUND)
+	  {
+	     SLang_verror (SL_InvalidParm_Error, "Variable is not compound type");
+	     goto free_and_return;
+	  }
+
+	(void) put_compound (ncid, varid, xtype, start, count, stride, at, NULL);
 	goto free_and_return;
      }
+
 
    if (-1 == map_base_sltype_to_xtype (at->data_type, &xtype))
      goto free_and_return;
@@ -913,128 +1093,12 @@ free_and_return:
    SLang_free_array (at_start);
 }
 
-static int get_var_type (int ncid, int varid, nc_type *xtypep)
-{
-   int status;
-
-   status = nc_inq_vartype (ncid, varid, xtypep);
-   if (status == NC_NOERR) return 0;
-   throw_nc_error ("nc_inq_vartype", status);
-   return -1;
-}
 
 static int compute_align_and_size (int ncid, nc_type xtype, size_t *alignp, size_t *sizep);
+static int extract_compounds (int ncid, Compound_Info_Type *cinfo, unsigned char *data, size_t num_elements, SLang_Struct_Type **);
+
 static SLang_Struct_Type *extract_compound (int ncid, nc_type xtype, char **field_names, size_t nfields,
 					    unsigned char *data);
-
-static int get_nc_xclass (int ncid, nc_type xtype, int *xclassp)
-{
-   int status = nc_inq_user_type (ncid, xtype, NULL, NULL, NULL, NULL, xclassp);
-   if (status != NC_NOERR)
-     {
-	throw_nc_error ("nc_inq_user_type", xtype);
-	return -1;
-     }
-   return 0;
-}
-
-
-static int get_compound_field_info (int ncid, int xtype, int idx, char *name,
-				    size_t *field_ofsp, nc_type *field_xtypep, int *ndimsp,
-				    size_t *num_elemsp, SLindex_Type *at_dims)
-{
-   size_t ofs, num_elems;
-   int *dims;
-   nc_type field_xtype;
-   int status, i, ndims;
-
-   status = nc_inq_compound_field (ncid, xtype, idx, name, &ofs, &field_xtype, &ndims, NULL);
-   if (status != NC_NOERR)
-     {
-	throw_nc_error ("nc_inq_compound_field", status);
-	return -1;
-     }
-   if (name == NULL) name = ""; else name[NC_MAX_NAME] = 0;
-
-   if (ndims > SLARRAY_MAX_DIMS)
-     {
-	SLang_verror (SL_LimitExceeded_Error, "slang arrays are currently limited to %d dimensions.  The compound field %s has %d dimensions",
-		      SLARRAY_MAX_DIMS, name, ndims);
-	return -1;
-     }
-   if (field_xtypep != NULL) *field_xtypep = field_xtype;
-   if (field_ofsp != NULL) *field_ofsp = ofs;
-   if (ndimsp != NULL) *ndimsp = ndims;
-
-   if ((at_dims == NULL) && (num_elemsp == NULL))
-     return 0;
-
-   /* otherwise dims is needed */
-
-   if (NULL == (dims = (int *)SLmalloc ((ndims+1) * sizeof(int))))
-     return -1;
-
-   status = nc_inq_compound_field (ncid, xtype, idx, NULL, NULL, NULL, &ndims, dims);
-   if (status != NC_NOERR)
-     {
-	throw_nc_error ("nc_inq_compound_field", status);
-	SLfree (dims);
-	return -1;
-     }
-
-   num_elems = 1;
-   for (i = 0; i < ndims; i++)
-     {
-	if (at_dims != NULL) at_dims[i] = dims[i];
-	num_elems *= dims[i];
-     }
-   if (num_elemsp != NULL) *num_elemsp = num_elems;
-
-   SLfree (dims);
-   return 0;
-}
-
-
-static int get_compound_info (int ncid, nc_type xtype, char ***field_namesp, size_t *nfieldsp, size_t *sizep)
-{
-   size_t nfields, size;
-   char **field_names;
-   unsigned int i;
-   int status;
-
-   *field_namesp = NULL;
-
-   status = nc_inq_compound (ncid, xtype, NULL, &size, &nfields);
-   if (status != NC_NOERR)
-     {
-	throw_nc_error ("nc_inq_compound", status);
-	return -1;
-     }
-
-   if (NULL == (field_names = (char **)SLcalloc (nfields, sizeof(char *))))
-     return -1;
-
-   for (i = 0; i < nfields; i++)
-     {
-	char name[NC_MAX_NAME+1];
-
-	if (-1 == get_compound_field_info (ncid, xtype, i, name, NULL, NULL, NULL, NULL, NULL))
-	  {
-	     free_slstring_array (field_names, nfields);
-	     return -1;
-	  }
-	if (NULL == (field_names[i] = SLang_create_slstring (name)))
-	  {
-	     free_slstring_array (field_names, nfields);
-	     return -1;
-	  }
-     }
-   *field_namesp = field_names;
-   *nfieldsp = nfields;
-   *sizep = size;
-
-   return 0;
-}
 
 static int push_compound_element (int ncid, nc_type xtype, int idx, unsigned char *data)
 {
@@ -1095,40 +1159,25 @@ static int push_compound_element (int ncid, nc_type xtype, int idx, unsigned cha
      {
       case SLANG_STRUCT_TYPE:
 	  {
-	     SLang_Struct_Type *s;
-	     char **field_names;
-	     size_t nfields, size1;
+	     Compound_Info_Type cinfo;
 
-	     if (-1 == get_compound_info (ncid, field_xtype, &field_names, &nfields, &size1))
+	     if (-1 == init_compound_info (ncid, field_xtype, &cinfo, 0))
 	       break;
-
 	     if (num_elements == 1)
 	       {
-		  if (NULL != (s = extract_compound (ncid, field_xtype, field_names, nfields, data)))
-		    status = SLang_push_struct (s);
-		  SLang_free_struct (s);
-	       }
-	     else
-	       {
-		  size_t j;
-		  SLang_Struct_Type **sp = (SLang_Struct_Type **)at->data;
-
-		  status = 0;
-		  for (j = 0; j < num_elements; j++)
+		  SLang_Struct_Type *s;
+		  if (0 == (status = extract_compounds (ncid, &cinfo, data, num_elements, &s)))
 		    {
-		       s = extract_compound (ncid, field_xtype, field_names, nfields, data);
-		       if (s == NULL)
-			 {
-			    status = -1;
-			    break;
-			 }
-		       sp[j] = s;
-		       data += size1;
+		       status = SLang_push_struct (s);
+		       SLang_free_struct (s);
 		    }
 	       }
-	     free_slstring_array (field_names, nfields);
-	     break;
+	     else
+	       status = extract_compounds (ncid, &cinfo, data, num_elements, (SLang_Struct_Type **) at->data);
+
+	     free_compound_info (&cinfo);
 	  }
+	break;
 
       case SLANG_STRING_TYPE:
 	if (num_elements == 1)
@@ -1202,51 +1251,71 @@ static SLang_Struct_Type *extract_compound (int ncid, nc_type xtype, char **fiel
    return s;
 }
 
-static int get_vars_compound (int ncid, int varid, size_t *start, size_t *count, ptrdiff_t *stride,
-			      SLang_Array_Type *at)
+static int extract_compounds (int ncid, Compound_Info_Type *cinfo, unsigned char *data, size_t num_elements,
+			      SLang_Struct_Type **sp)
+
 {
-   size_t size;
-   size_t nfields;
+   size_t i, size;
+   int status = 0;
+
+   size = cinfo->size;
+   for (i = 0; i < num_elements; i++)
+     {
+	SLang_Struct_Type *s = extract_compound (ncid, cinfo->xtype, cinfo->field_names, cinfo->nfields, data);
+	if (s == NULL)
+	  {
+	     status = -1;
+	     while (i > 0)
+	       {
+		  i--;
+		  SLang_free_struct (sp[i]);
+		  sp[i] = NULL;
+	       }
+	     break;
+	  }
+	sp[i] = s;
+	data += size;
+     }
+   return status;
+}
+
+static int get_compound (int ncid, int varid, nc_type xtype,
+			 size_t *start, size_t *count, ptrdiff_t *stride,
+			 SLang_Array_Type *at, const char *attname)
+{
+   Compound_Info_Type cinfo;
    unsigned char *data;
-   char **field_names;
-   nc_type xtype;
-   unsigned int i;
    int status, return_status;
 
-   if (-1 == get_var_type (ncid, varid, &xtype))
-     return -1;
-
-   if (-1 == get_compound_info (ncid, xtype, &field_names, &nfields, &size))
+   if (-1 == init_compound_info (ncid, xtype, &cinfo, 0))
      return -1;
 
    return_status = -1;
 
-   if (NULL == (data = (unsigned char *) SLmalloc (at->num_elements*size)))
+   if (NULL == (data = (unsigned char *) SLmalloc (at->num_elements*cinfo.size)))
      goto free_and_return;
 
-   status = nc_get_vars (ncid, varid, start, count, stride, data);
+   if (attname != NULL)
+     status = nc_get_att (ncid, varid, attname, data);
+   else if (stride == NULL)
+     status = nc_get_vara (ncid, varid, start, count, data);
+   else
+     status = nc_get_vars (ncid, varid, start, count, stride, data);
+
    if (status != NC_NOERR)
      {
-	throw_nc_error ("nc_get_vars", status);
+	throw_nc_error ("nc_get_xxx", status);
 	goto free_and_return;
      }
 
-   for (i = 0; i < at->num_elements; i++)
-     {
-	SLang_Struct_Type *s;
+   return_status = extract_compounds (ncid, &cinfo, data, at->num_elements, (SLang_Struct_Type **)at->data);
 
-	if (NULL == (s = extract_compound (ncid, xtype, field_names, nfields, data+i*size)))
-	  goto free_and_return;
-
-	((SLang_Struct_Type **)at->data)[i] = s;
-     }
-   return_status = 0;
    /* drop */
 
 free_and_return:
 
    SLfree (data);
-   free_slstring_array (field_names, nfields);
+   free_compound_info (&cinfo);
    return return_status;
 }
 
@@ -1394,7 +1463,7 @@ static void sl_nc_get_vars (NCid_Type *nc, NCid_Var_Type *ncvar)
 	break;
 
       case SLANG_STRUCT_TYPE:
-	if (-1 == get_vars_compound (ncid, varid, start, count, stride, at))
+	if (-1 == get_compound (ncid, varid, xtype, start, count, stride, at, NULL))
 	  goto free_and_return;
 	status = NC_NOERR;
 	break;
@@ -1423,17 +1492,15 @@ free_and_return:
    SLang_free_array (at_start);
 }
 
-/* Pop a value from the stack into the data+offset address */
+static int embed_compound (int ncid, Compound_Info_Type *cinfo, SLang_Struct_Type **sp, size_t num_elements, unsigned char *data);
 
-static int compute_compound_align_and_size (int ncid, nc_type xtype, size_t *alignp, size_t *sizep,
-					    size_t *xnfieldsp, size_t **field_offsetsp, nc_type **field_xtypesp,
-					    size_t **field_num_elemsp);
-
+/* Pop the item of type field_xtypes from the stack and embed it in the data buffer */
 static int pop_compound_element (int ncid, unsigned char *data, int idx, nc_type field_xtype,
-				 size_t field_offset, const char *field_name, size_t field_num_elems)
+				 const char *field_name, size_t field_num_elems)
 {
    SLang_Array_Type *at;
    SLtype sltype;
+   int status;
 
    (void) idx;
 
@@ -1467,41 +1534,145 @@ static int pop_compound_element (int ncid, unsigned char *data, int idx, nc_type
 	  }
      }
 
-   data += field_offset;
+   status = 0;
    switch (sltype)
      {
       case SLANG_STRUCT_TYPE:
+	  {
+	     Compound_Info_Type cinfo;
+
+	     if (-1 == init_compound_info (ncid, field_xtype, &cinfo, 1))
+	       {
+		  SLang_free_array (at);   /* NULL ok */
+		  return -1;
+	       }
+	     if (at == NULL)
+	       {
+		  SLang_Struct_Type *s;
+		  if (-1 == SLang_pop_struct (&s))
+		    return -1;
+		  status = embed_compound (ncid, &cinfo, &s, 1, data);
+		  SLang_free_struct (s);
+	       }
+	     else
+	       status = embed_compound (ncid, &cinfo, (SLang_Struct_Type **) at->data, at->num_elements, data);
+	     free_compound_info (&cinfo);
+	  }
+	break;
+
       case SLANG_STRING_TYPE:
+	if (at == NULL)
+	  {
+	     char *str;
+	     if (-1 == SLang_pop_slstring (&str))
+	       return -1;
+	     *(char **) data = str;
+	  }
+	else
+	  {
+	     char **sp = (char **)data, **at_sp = (char **) at->data;
+	     size_t i;
+
+	     for (i = 0; i < field_num_elems; i++)
+	       {
+		  if (NULL == (sp[i] = SLang_create_slstring (at_sp[i])))
+		    {
+		       while (i != 0)
+			 {
+			    i--;
+			    SLang_free_slstring (sp[i]);
+			    sp[i] = NULL;
+			 }
+		       status = -1;
+		       break;
+		    }
+	       }
+	  }
 	break;
 
       default:
 	if (at == NULL)
 	  return SLang_pop_value (sltype, data);
 	memcpy (data, at->data, field_num_elems*at->sizeof_type);
-	SLang_free_array (at);
-	return 0;
      }
-
-   SLang_verror (SL_NotImplemented_Error, "Compound of compound/string not implemented");
-   return -1;
+   if (at != NULL) SLang_free_array (at);
+   return status;
 }
 
-/* This gets called with at->data_type == SLANG_STRUCT_TYPE */
-static int put_vars_compound (int ncid, int varid, size_t *start, size_t *count, ptrdiff_t *stride, SLang_Array_Type *at)
-{
-   size_t align;
-   SLang_Struct_Type **sp;
-   char **field_names;
-   size_t *field_offsets = NULL, *field_num_elems = NULL;
-   nc_type *field_xtypes = NULL;
-   unsigned char *compound_data, *compound_data1;
-   size_t nfields, size;
-   SLuindex_Type i, num_elements;
-   nc_type xtype;
-   int xclass, status;
+static void free_compound (int ncid, nc_type xtype, size_t num_elements, unsigned char *data);
 
-   sp = (SLang_Struct_Type **)at->data;
-   num_elements = at->num_elements;
+static void free_compound_fields (unsigned char *compound_data, int ncid, Compound_Info_Type *cinfo)
+{
+   size_t i, nfields;
+
+   nfields = cinfo->nfields;
+
+   for (i = 0; i < nfields; i++)
+     {
+	size_t j, num_elements;
+	unsigned char *data;
+	nc_type field_xtype = cinfo->field_xtypes[i];
+	int xclass;
+
+	data = compound_data + cinfo->field_offsets[i];
+	num_elements = cinfo->field_num_elems[i];
+	if (field_xtype == NC_STRING)
+	  {
+	     char **sp = (char **)(data);
+
+	     for (j = 0; j < num_elements; j++)
+	       SLang_free_slstring (sp[j]);   /* NULL ok */
+
+	     continue;
+	  }
+
+	if (field_xtype <= NC_MAX_ATOMIC_TYPE)
+	  continue;
+
+	if (-1 == get_nc_xclass (ncid, field_xtype, &xclass))
+	  continue;	       /* ???? */
+	if (xclass == NC_COMPOUND)
+	  {
+	     free_compound (ncid, field_xtype, num_elements, data);
+	     continue;
+	  }
+     }
+}
+
+static void free_compound_data_items (int ncid, Compound_Info_Type *cinfo, unsigned char *data, size_t num_elements)
+{
+   size_t i;
+
+   for (i = 0; i < num_elements; i++)
+     {
+	free_compound_fields (data, ncid, cinfo);
+	data += cinfo->size;
+     }
+}
+
+/* Free the items on the compound data list */
+static void free_compound (int ncid, nc_type xtype, size_t num_elements, unsigned char *data)
+{
+   Compound_Info_Type cinfo;
+
+   if (-1 == init_compound_info (ncid, xtype, &cinfo, 1))
+     return;
+   free_compound_data_items (ncid, &cinfo, data, num_elements);
+   free_compound_info (&cinfo);
+}
+
+
+/*
+ * This function embeds the field values of an array of slang structs into the data buffer.
+ */
+static int embed_compound (int ncid, Compound_Info_Type *cinfo, SLang_Struct_Type **sp, size_t num_elements, unsigned char *data)
+{
+   size_t nfields, i, size;
+   size_t *field_offsets = NULL, *field_num_elems = NULL;
+   char **field_names;
+   nc_type *field_xtypes = NULL;
+   unsigned char *compound_data;
+
    for (i = 0; i < num_elements; i++)
      {
 	if (sp[i] == NULL)
@@ -1511,32 +1682,16 @@ static int put_vars_compound (int ncid, int varid, size_t *start, size_t *count,
 	  }
      }
 
-   if (-1 == get_var_type (ncid, varid, &xtype))
-     return -1;
+   size = cinfo->size;
+   memset (data, 0, size*num_elements);
 
-   if (-1 == get_nc_xclass (ncid, xtype, &xclass))
-     return -1;
+   field_offsets = cinfo->field_offsets;
+   field_xtypes = cinfo->field_xtypes;
+   field_names = cinfo->field_names;
+   field_num_elems = cinfo->field_num_elems;
+   nfields = cinfo->nfields;
 
-   if (xclass != NC_COMPOUND)
-     {
-	SLang_verror (SL_InvalidParm_Error, "Variable is not compound type");
-	return -1;
-     }
-
-   if (-1 == get_compound_info (ncid, xtype, &field_names, &nfields, &size))
-     return -1;
-
-   status = -1;
-
-   if (-1 == compute_compound_align_and_size (ncid, xtype, &align, &size, NULL, &field_offsets, &field_xtypes, &field_num_elems))
-     goto return_status;
-
-   if (NULL == (compound_data = (unsigned char *)SLmalloc(num_elements*size)))
-     goto return_status;
-
-   memset (compound_data, 0, size*num_elements);
-
-   compound_data1 = compound_data;
+   compound_data = data;
    for (i = 0; i < num_elements; i++)
      {
 	SLang_Struct_Type *s = sp[i];
@@ -1545,32 +1700,60 @@ static int put_vars_compound (int ncid, int varid, size_t *start, size_t *count,
 	for (j = 0; j < nfields; j++)
 	  {
 	     if (-1 == SLang_push_struct_field (s, field_names[j]))
-	       goto return_status;
-	     if (-1 == pop_compound_element (ncid, compound_data1, j, field_xtypes[j], field_offsets[j], field_names[j], field_num_elems[j]))
-	       goto return_status;
+	       goto return_error;
+	     if (-1 == pop_compound_element (ncid, compound_data + field_offsets[j], j, field_xtypes[j], field_names[j], field_num_elems[j]))
+	       goto return_error;
 	  }
-	compound_data1 += size;
+	compound_data += size;
+     }
+   return 0;
+
+return_error:
+
+   free_compound_data_items (ncid, cinfo, data, num_elements);
+   return -1;
+}
+
+
+/* This gets called with at->data_type == SLANG_STRUCT_TYPE */
+static int put_compound (int ncid, int varid, nc_type xtype, size_t *start, size_t *count, ptrdiff_t *stride,
+			 SLang_Array_Type *at, const char *attr_name)
+{
+   Compound_Info_Type cinfo;
+   size_t size;
+   unsigned char *compound_data;
+   SLuindex_Type num_elements;
+   int status;
+
+   if (-1 == init_compound_info (ncid, xtype, &cinfo, 1))
+     return -1;
+   size = cinfo.size;
+
+   num_elements = at->num_elements;
+   if ((NULL == (compound_data = (unsigned char *)SLmalloc(num_elements*size)))
+       || (-1 == embed_compound (ncid, &cinfo, (SLang_Struct_Type **)at->data, at->num_elements, compound_data)))
+     {
+	free_compound_info (&cinfo);
+	return -1;
      }
 
-   if (stride == NULL)
-     status = nc_put_vara(ncid, varid, start, count, compound_data);
+   if (attr_name != NULL)
+     status = nc_put_att (ncid, varid, attr_name, xtype, num_elements, compound_data);
+   else if (stride == NULL)
+     status = nc_put_vara (ncid, varid, start, count, compound_data);
    else
      status = nc_put_vars (ncid, varid, start, count, stride, compound_data);
    if (status != NC_NOERR)
      {
-	throw_nc_error ("put_vars_compound->nc_put_var", status);
+	throw_nc_error ("nc_put_xxx", status);
 	status = -1;
      }
    else status = 0;
 
-   /* drop */
-
-return_status:
+   free_compound_data_items (ncid, &cinfo, compound_data, num_elements);
    SLfree (compound_data);
-   free_slstring_array (field_names, nfields);
-   SLfree (field_num_elems);
-   SLfree (field_xtypes);
-   SLfree (field_offsets);
+   free_compound_info (&cinfo);
+
    return status;
 }
 
@@ -2063,7 +2246,9 @@ free_and_return:
    SLfree (dimids);
 }
 
-static void put_att (NCid_Type *nc, int varid, const char *name)
+/* Usage: .put_att (data, nc, varid, name, datatype);
+ */
+static void put_att (NCid_Type *nc, int varid, const char *name, NCid_DataType_Type *dtype)
 {
    SLang_Array_Type *at;
    nc_type xtype;
@@ -2085,14 +2270,29 @@ static void put_att (NCid_Type *nc, int varid, const char *name)
      }
 
    /* Otherwise an array */
-   if (-1 == SLang_pop_array (&at, 1))
-     return;
-
-   if (-1 == map_base_sltype_to_xtype (at->data_type, &xtype))
+   if (dtype->is_sltype == 0)
      {
-	SLang_free_array (at);
+	switch (dtype->xclass)
+	  {
+	   case NC_COMPOUND:
+	     if (-1 == SLang_pop_array_of_type (&at, SLANG_STRUCT_TYPE))
+	       return;
+	     (void) put_compound (nc->ncid, varid, dtype->xtype, NULL, NULL, NULL, at, name);
+	     SLang_free_array (at);
+	     break;
+
+	   case NC_VLEN:
+	   case NC_OPAQUE:
+	   case NC_ENUM:
+	   default:
+	     SLang_verror (SL_NotImplemented_Error, "netCDF OPAQUE, VLEN, and ENUM not implemented");
+	  }
 	return;
      }
+
+   if (-1 == SLang_pop_array_of_type (&at, dtype->sltype))
+     return;
+   xtype = dtype->xtype;
 
    switch (xtype)
      {
@@ -2139,14 +2339,14 @@ static void put_att (NCid_Type *nc, int varid, const char *name)
 }
 
 /* Usage: _nc_put_att (value, ncid, varid, name) */
-static void sl_nc_put_att (NCid_Type *nc, NCid_Var_Type *ncvar, const char *name)
+static void sl_nc_put_att (NCid_Type *nc, NCid_Var_Type *ncvar, const char *name, NCid_DataType_Type *dtype)
 {
-   put_att (nc, ncvar->var_id, name);
+   put_att (nc, ncvar->var_id, name, dtype);
 }
 
-static void sl_nc_put_global_att (NCid_Type *nc, const char *name)
+static void sl_nc_put_global_att (NCid_Type *nc, const char *name, NCid_DataType_Type *dtype)
 {
-   put_att (nc, NC_GLOBAL, name);
+   put_att (nc, NC_GLOBAL, name, dtype);
 }
 
 /* This function returns type information about the variable and its length.
@@ -2225,9 +2425,46 @@ static void get_att (NCid_Type *nc, int varid, const char *name)
    if (-1 == inq_att (nc->ncid, varid, name, &sltype, &xtype, &len))
      return;
 
+   num = (SLindex_Type) len;
+
    if (sltype == SLANG_VOID_TYPE)
      {
-	SLang_verror (SL_NotImplemented_Error, "NC Type %d not implemented", (int) xtype);
+	int xclass;
+
+	if (-1 == get_nc_xclass (nc->ncid, xtype, &xclass))
+	  return;
+
+	switch (xclass)
+	  {
+	   case NC_COMPOUND:
+	     sltype = SLANG_STRUCT_TYPE;
+	     if (NULL == (at = SLang_create_array (sltype, 0, NULL, &num, 1)))
+	       return;
+	     if (-1 == get_compound (nc->ncid, varid, xtype, NULL, NULL, NULL, at, name))
+	       {
+		  SLang_free_array (at);
+		  return;
+	       }
+	     if (num == 1)
+	       (void) SLang_push_value (at->data_type, at->data);
+	     else
+	       (void) SLang_push_array (at, 0);
+	     SLang_free_array (at);
+	     break;
+
+	   case NC_ENUM:
+	     SLang_verror (SL_NotImplemented_Error, "ENUM types are not yet implemented");
+	     break;
+	   case NC_OPAQUE:
+	     SLang_verror (SL_NotImplemented_Error, "OPAQUE types are not yet implemented");
+	     break;
+	   case NC_VLEN:
+	     SLang_verror (SL_NotImplemented_Error, "VLEN types are not yet implemented");
+	     break;
+	   default:
+	     SLang_verror (SL_NotImplemented_Error, "Unknown class %d", xclass);
+	     break;
+	  }
 	return;
      }
 
@@ -2255,8 +2492,6 @@ static void get_att (NCid_Type *nc, int varid, const char *name)
 	SLbstring_free (bstr);
 	return;
      }
-
-   num = (SLindex_Type) len;
 
    if (NULL == (at = SLang_create_array (sltype, 0, NULL, &num, 1)))
      return;
@@ -2738,12 +2973,15 @@ static void sl_nc_def_compound (NCid_Type *nc, const char *name)
 	     SLang_verror (SL_InvalidParm_Error, "_nc_def_compound: No data type for field %s specified", field_names[i]);
 	     goto free_and_return;
 	  }
+#if 0
 	if (dtype->is_sltype)
 	  {
 	     if (-1 == map_base_sltype_to_xtype (dtype->sltype, xtypes + i))
 	       goto free_and_return;
 	  }
-	else xtypes[i] = dtype->xtype;
+	else
+#endif
+	  xtypes[i] = dtype->xtype;
      }
 
    if (-1 == compute_compound_size_and_offsets (ncid, num_fields, xtypes, num_elems,
@@ -2840,8 +3078,8 @@ static SLang_Intrin_Fun_Type Module_Intrinsics [] =
    MAKE_INTRINSIC_2("_nc_inq_varshape", sl_nc_inq_varshape, V, NCID_DUMMY, NCID_VAR_DUMMY),
    MAKE_INTRINSIC_1("_nc_inq_global_atts", sl_nc_inq_global_atts, V, NCID_DUMMY),
 
-   MAKE_INTRINSIC_3("_nc_put_att", sl_nc_put_att, V, NCID_DUMMY, NCID_VAR_DUMMY, S),
-   MAKE_INTRINSIC_2("_nc_put_global_att", sl_nc_put_global_att, V, NCID_DUMMY, S),
+   MAKE_INTRINSIC_4("_nc_put_att", sl_nc_put_att, V, NCID_DUMMY, NCID_VAR_DUMMY, S, NCID_DATATYPE_DUMMY),
+   MAKE_INTRINSIC_3("_nc_put_global_att", sl_nc_put_global_att, V, NCID_DUMMY, S, NCID_DATATYPE_DUMMY),
    MAKE_INTRINSIC_3("_nc_get_att", sl_nc_get_att, V, NCID_DUMMY, NCID_VAR_DUMMY, S),
    MAKE_INTRINSIC_2("_nc_get_global_att", sl_nc_get_global_att, V, NCID_DUMMY, S),
    /* MAKE_INTRINSIC_2("_nc_inq_varatts", sl_nc_inq_varatts, V, NCID_DUMMY, S), */

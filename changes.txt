@@ -8,3 +8,4 @@ Changes since 0.1.0
     stride is 1 to work-around bugs in some netcdf versions (e.g.,
     4.6.1).
 6.  Added put_slices method and writing compound types
+7.  Added support for nested compound objects
