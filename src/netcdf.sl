@@ -409,6 +409,61 @@ private define map_string_to_type (ncobj, s)
    throw InvalidParmError, "Unable to map $s to a NetCDF_DataType"$;
 }
 
+private define set_var_chunking (ncid, varid, varname, dims, ndims, storage, chunking)
+{
+   if (chunking != NULL)
+     {
+	if (length (chunking) != ndims)
+	  throw InvalidParmError, "The chunking array for variable $name must contain $ndims elements"$;
+	if (storage == NULL) storage = NC_CHUNKED;
+     }
+
+   if ((storage != NULL) || (chunking != NULL))
+     _nc_def_var_chunking (chunking, ncid, varid, storage);   %  note order
+}
+
+private define set_var_fill (ncid, varid, name, fill)
+{
+   variable code = (fill == NULL) ? NC_NOFILL : NC_FILL;
+   _nc_def_var_fill (fill, ncid, varid, code);
+}
+
+private define handle_def_var_qualifiers (ncid, varid, varname, dims, ndims)
+{
+   variable storage = qualifier ("storage");
+   variable chunking = qualifier ("chunking");
+   set_var_chunking (ncid, varid, varname, ndims, ndims, storage, chunking);
+
+   if (qualifier_exists ("fill"))
+     set_var_fill (ncid, varid, varname, qualifier ("fill"));
+
+   variable a, b, c;
+   variable
+     cache_size = qualifier("cache_size"),
+     cache_nelems = qualifier ("cache_nelems"),
+     cache_preemp = qualifier ("cache_preemp");
+   if ((cache_size != NULL) || (cache_nelems != NULL) || (cache_preemp != NULL))
+     {
+	(a, b, c) = _nc_get_var_chunk_cache (ncid, varid);
+	if (cache_size == NULL) cache_size = a;
+	if (cache_nelems == NULL) cache_nelems = b;
+	if (cache_preemp == NULL) cache_preemp = c;
+	_nc_set_var_chunk_cache (ncid, varid, cache_size, cache_nelems, cache_preemp);
+     }
+   variable
+     deflate_shuffle = qualifier ("deflate_shuffle"),
+     deflate = qualifier ("deflate"),
+     deflate_level = qualifier ("deflate_level");
+   if ((deflate != NULL) || (deflate_level != NULL) || (deflate_shuffle != NULL))
+     {
+	(a, b, c) = _nc_inq_var_deflate (ncid, varid);
+	if (deflate_shuffle == NULL) deflate_shuffle = a;
+	if (deflate == NULL) deflate = 1;
+	if (deflate_level == NULL) deflate_level = c;
+	_nc_def_var_deflate (ncid, varid, deflate_shuffle, deflate, deflate_level);
+     }
+}
+
 private define netcdf_def_var ()
 {
    variable ncobj, name, type, dims;
@@ -416,7 +471,16 @@ private define netcdf_def_var ()
    if (_NARGS != 4)
      {
 	_pop_n (_NARGS);
-	usage ("<ncobj>.def_var (name, type, array-of-dim-names|NULL])");
+	usage ("\
+<ncobj>.def_var (name, type, array-of-dim-names|NULL] ; qualifiers)\n\
+qualifiers:\n\
+   storage=NC_CONTIGUOUS|NC_CHUNKED\n\
+   chunking=Array of chunk sizes | NULL\n\
+   fill=fill_val\n\
+   cache_size=val, cache_nelems=val, cache_preemp=val\n\
+   deflate=0|1, deflate_shuffle=0|1, deflate_level=0-9\n\
+"
+	      );
      }
 
    (ncobj, name, type, dims) = ();
@@ -424,9 +488,15 @@ private define netcdf_def_var ()
    variable group_info = ncobj.group_info;
    variable varids = group_info.varids;
    if (assoc_key_exists (varids, name))
-     throw InvalidParmError, "Variable name `$name' already exists"$, name;
+     throw InvalidParmError, "Variable name `$name' already exists"$;
 
-   variable ndims = (dims == NULL) ? 0 : length(dims);
+   variable ndims = 0;
+   if (dims != NULL)		       %  NULL indicates a scalar
+     {
+	if (typeof (dims) != Array_Type) dims = [dims];
+	ndims = length(dims);
+     }
+
    variable dimids = NetCDF_Dim_Type[ndims];
    variable ncid = group_info.ncid;
    _for (0, ndims-1, 1)
@@ -440,8 +510,42 @@ private define netcdf_def_var ()
      }
 
    type = map_string_to_type (ncobj, type);
+   variable varid = _nc_def_var (ncid, name, type, dimids);
+   varids[name] = varid;
 
-   varids[name] = _nc_def_var (ncid, name, type, dimids);
+   handle_def_var_qualifiers (ncid, varid, name, dims, ndims ;; __qualifiers);
+}
+
+private define netcdf_inq_var_storage ()
+{
+   if (_NARGS != 2)
+     {
+	usage ("s = <ncobj>.inq_var_storage (varname)");
+     }
+   variable ncobj, varname;
+   (ncobj, varname) = ();
+
+   variable group_info = ncobj.group_info;
+   variable varids = group_info.varids;
+   ifnot (assoc_key_exists (varids, varname))
+     throw InvalidParmError, "Variable name `$varname' in unknown"$;
+   variable varid = varids[varname];
+   variable ncid = group_info.ncid;
+
+   variable s = struct
+     {
+	fill = _nc_inq_var_fill (ncid, varid),
+	storage,
+	chunking,
+	cache_size,
+	cache_nelems,
+	cache_preemp,
+	deflate, deflate_level, deflate_shuffle,
+     };
+   (s.storage, s.chunking) = _nc_inq_var_chunking (ncid, varid);
+   (s.cache_size, s.cache_nelems, s.cache_preemp) = _nc_get_var_chunk_cache (ncid, varid);
+   (s.deflate_shuffle, s.deflate, s.deflate_level) = _nc_inq_var_deflate (ncid, varid);
+   return s;
 }
 
 private define netcdf_put_att ()
@@ -693,6 +797,7 @@ private variable Netcdf_Obj = struct
    put_att = &netcdf_put_att,
    get_att = &netcdf_get_att,
    def_grp = &netcdf_def_grp,
+   inq_var_storage = &netcdf_inq_var_storage,
    def_compound  = &netcdf_def_compound,
    typeid = &netcdf_typeid,
    subgrps = &netcdf_subgrps,

@@ -47,8 +47,17 @@ static int NC_Errno;
 
 static void throw_nc_error (const char *name, int err)
 {
+   if (err == NC_NOERR) return;
+
    NC_Errno = err;
    SLang_verror (sl_NC_Error, "%s returned error code %d: %s", name, err, nc_strerror(err));
+}
+
+static int check_nc_error (const char *name, int err)
+{
+   if (err == NC_NOERR) return 0;
+   throw_nc_error (name, err);
+   return -1;
 }
 
 /*{{{ Utility Functions */
@@ -107,8 +116,21 @@ static void free_slstring_array (char **sp, unsigned int n)
 
 /*{{{ Data Type functions */
 
-#define _SL_SIZE_T_TYPE SLANG_ULLONG_TYPE
-#define _SL_PTRDIFF_T_TYPE SLANG_LLONG_TYPE
+#if SIZEOF_OFF_T == SIZEOF_LONG
+# define _SL_SIZE_T_TYPE SLANG_ULONG_TYPE
+#else
+# if SIZEOF_SIZE_T == SIZEOF_LONG_LONG
+#  define _SL_SIZE_T_TYPE SLANG_ULLONG_TYPE
+# endif
+#endif
+
+#if SIZEOF_PTRDIFF_T == SIZEOF_LONG
+# define _SL_PTRDIFF_T_TYPE SLANG_LONG_TYPE
+#else
+# if SIZEOF_PTRDIFF_T == SIZEOF_LONG_LONG
+#  define _SL_PTRDIFF_T_TYPE SLANG_LLONG_TYPE
+# endif
+#endif
 
 static int NCid_Dim_Type_Id = 0;
 typedef struct
@@ -673,6 +695,237 @@ free_and_return:
    if (dim_ids != NULL) SLfree (dim_ids);
 }
 
+/* Usage: _nc_def_var_chunking (chunking, ncid, ncvar, int storage) */
+static void sl_nc_def_var_chunking (NCid_Type *nc, NCid_Var_Type *ncvar, int *storagep)
+{
+   unsigned long long chunk_size;
+   size_t sizeof_type;
+   size_t *chunk;
+   SLang_Array_Type *at_chunk = NULL;
+   unsigned int i, num_dims;
+   int status, storage;
+
+   if (SLang_Num_Function_Args == 4)
+     {
+	if (-1 == pop_array_of_type_or_null (&at_chunk, _SL_SIZE_T_TYPE))
+	  return;
+     }
+
+   num_dims = ncvar->num_dims;
+   storage = *storagep;
+   switch (storage)
+     {
+      default:
+	SLang_verror (SL_InvalidParm_Error, "Invalid storage type");
+	SLang_free_array (at_chunk);
+	return;
+
+      case NC_CHUNKED:
+	if (num_dims == 0)
+	  {
+	     /* scalar */
+	     SLang_free_array (at_chunk);
+	     return;
+	  }
+	if (at_chunk != NULL)
+	  break;
+	/* fall through */
+      case NC_CONTIGUOUS:
+#ifdef NC_COMPACT
+      case NC_COMPACT:
+#endif
+	status = nc_def_var_chunking (nc->ncid, ncvar->var_id, storage, NULL);
+	if (status != NC_NOERR)
+	  throw_nc_error ("nc_def_var_chunking", status);
+	SLang_free_array (at_chunk);
+	return;
+     }
+
+   if (at_chunk->num_elements != num_dims)
+     {
+	SLang_verror (SL_InvalidParm_Error, "The netCDF variable requires a chunking array with %u elements", num_dims);
+	SLang_free_array (at_chunk);
+	return;
+     }
+
+   status = nc_inq_type (nc->ncid, ncvar->xtype, NULL, &sizeof_type);
+   if (status != NC_NOERR)
+     {
+	throw_nc_error ("nc_inq_type", status);
+	SLang_free_array (at_chunk);
+	return;
+     }
+
+   chunk = (size_t *) at_chunk->data;
+   chunk_size = sizeof_type;
+   for (i = 0; i < num_dims; i++)
+     {
+	unsigned long long new_chunk_size;
+	if (chunk[i] <= 0)
+	  {
+	     SLang_verror (SL_InvalidParm_Error, "Invalid chunk size for dimension %u", i);
+	     SLang_free_array (at_chunk);
+	     return;
+	  }
+	new_chunk_size = chunk_size * chunk[i];
+	if ((new_chunk_size/chunk[i] != chunk_size)
+	    || (new_chunk_size > 0x40000000))   /* 1 GiB */
+	  {
+	     SLang_verror (SL_InvalidParm_Error, "Chunk size is invalid (> 1 GiB) or and cause arithmetic overflow");
+	     SLang_free_array (at_chunk);
+	     return;
+	  }
+	chunk_size = new_chunk_size;
+     }
+
+   status = nc_def_var_chunking (nc->ncid, ncvar->var_id, storage, chunk);
+   if (status != NC_NOERR)
+     throw_nc_error ("nc_def_var_chunking", status);
+
+   SLang_free_array (at_chunk);
+}
+
+static void sl_nc_inq_var_chunking (NCid_Type *nc, NCid_Var_Type *ncvar)
+{
+   SLang_Array_Type *at;
+   size_t *chunk;
+   SLindex_Type ndims;
+   int status, storage;
+
+   chunk = NULL;
+   at = NULL;
+   ndims = (SLindex_Type) ncvar->num_dims;
+   if (ndims != 0)
+     {
+	if (NULL == (at = SLang_create_array (_SL_SIZE_T_TYPE, 0, NULL, &ndims, 1)))
+	  return;
+	chunk = (size_t *)at->data;
+     }
+
+   status = nc_inq_var_chunking (nc->ncid, ncvar->var_id, &storage, chunk);
+   if (status != NC_NOERR)
+     {
+	throw_nc_error ("nc_inq_var_chunking", status);
+	SLang_free_array (at);
+	return;
+     }
+   (void) SLang_push_int (storage);
+   if ((storage == NC_CHUNKED) && (at != NULL))
+     (void) SLang_push_array (at, 0);
+   else
+     (void) SLang_push_null ();
+
+   SLang_free_array (at);	       /* NULL ok */
+}
+
+/* Usage: _nc_def_var_fill (fill, ncid, ncvar, int code) */
+static void sl_nc_def_var_fill (NCid_Type *nc, NCid_Var_Type *ncvar, int *code)
+{
+   union
+     {
+	double a;
+	long long b;
+	char c;
+     } fillbuf;
+   int status;
+   SLtype sltype;
+
+   if (*code == NC_NOFILL)
+     {
+	if (SLang_Num_Function_Args == 4)
+	  (void) SLdo_pop ();
+
+	status = nc_def_var_fill (nc->ncid, ncvar->var_id, NC_NOFILL, NULL);
+	(void) check_nc_error ("nc_def_var_fill", status);
+	return;
+     }
+
+   if (ncvar->xtype > NC_MAX_ATOMIC_TYPE)
+     {
+	SLang_verror (SL_NotImplemented_Error, "Fill values not implemented for COMPOUND, OPAQUE, VLEN, and ENUM types");
+	return;
+     }
+
+   if (-1 == map_base_xtype_to_sltype (ncvar->xtype, &sltype))
+     return;
+
+   if (-1 == SLang_pop_value (sltype, &fillbuf))
+     return;
+
+   status = nc_def_var_fill (nc->ncid, ncvar->var_id, NC_FILL, &fillbuf);
+   (void) check_nc_error ("nc_def_var_fill", status);
+}
+
+static void sl_nc_inq_var_fill (NCid_Type *nc, NCid_Var_Type *ncvar)
+{
+   union
+     {
+	double a;
+	long long b;
+	char c;
+     } fillbuf;
+   int status, fill;
+   SLtype sltype;
+
+   if (ncvar->xtype > NC_MAX_ATOMIC_TYPE)
+     {
+	SLang_verror (SL_NotImplemented_Error, "Fill values not implemented for COMPOUND, OPAQUE, VLEN, and ENUM types");
+	return;
+     }
+
+   if (-1 == map_base_xtype_to_sltype (ncvar->xtype, &sltype))
+     return;
+
+   status = nc_inq_var_fill (nc->ncid, ncvar->var_id, &fill, &fillbuf);
+   if (-1 == check_nc_error ("nc_inq_var_fill", status))
+     return;
+
+   if (fill == NC_NOFILL)
+     (void) SLang_push_null ();
+   else
+     (void) SLang_push_value (sltype, &fillbuf);
+}
+
+static void sl_nc_set_var_chunk_cache (NCid_Type *nc, NCid_Var_Type *ncvar, size_t *sizep,
+				      size_t *nelems, float *preemp)
+{
+   int status = nc_set_var_chunk_cache (nc->ncid, ncvar->var_id, *sizep, *nelems, *preemp);
+   (void) check_nc_error ("nc_set_var_chunk_cache", status);
+}
+
+static void sl_nc_get_var_chunk_cache (NCid_Type *nc, NCid_Var_Type *ncvar)
+{
+   size_t nelems, size;
+   float preemp;
+   int status;
+
+   status = nc_get_var_chunk_cache (nc->ncid, ncvar->var_id, &size, &nelems, &preemp);
+   if (-1 == check_nc_error ("nc_get_var_chunk_cache", status))
+     return;
+   (void) SLang_push_value (_SL_SIZE_T_TYPE, &size);
+   (void) SLang_push_value (_SL_SIZE_T_TYPE, &nelems);
+   (void) SLang_push_float (preemp);
+}
+
+static void sl_nc_def_var_deflate (NCid_Type *nc, NCid_Var_Type *ncvar,
+				  int *shuffle, int *deflate, int *level)
+{
+   int status = nc_def_var_deflate (nc->ncid, ncvar->var_id, *shuffle, *deflate, *level);
+   (void) check_nc_error ("nc_def_var_deflate", status);
+}
+
+static void sl_nc_inq_var_deflate (NCid_Type *nc, NCid_Var_Type *ncvar)
+{
+   int shuffle, deflate, level, status;
+
+   status = nc_inq_var_deflate (nc->ncid, ncvar->var_id, &shuffle, &deflate, &level);
+   if (-1 == check_nc_error ("nc_inq_var_deflate", status))
+     return;
+
+   (void) SLang_push_int (shuffle);
+   (void) SLang_push_int (deflate);
+   (void) SLang_push_int (level);
+}
 
 static int pop_slice_args (NCid_Type *nc, NCid_Var_Type *ncvar, int is_read,
 			   SLang_Array_Type **at_startp, SLang_Array_Type **at_countp,
@@ -3087,6 +3340,18 @@ static SLang_Intrin_Fun_Type Module_Intrinsics [] =
    MAKE_INTRINSIC_2("_nc_def_grp", sl_nc_def_grp, V, NCID_DUMMY, S),
    MAKE_INTRINSIC_2("_nc_inq_grp_ncid", sl_nc_inq_grp_ncid, V, NCID_DUMMY, S),
    MAKE_INTRINSIC_1("_nc_inq_grps", sl_nc_inq_grps, V, NCID_DUMMY),
+
+   MAKE_INTRINSIC_3("_nc_def_var_chunking", sl_nc_def_var_chunking, V, NCID_DUMMY, NCID_VAR_DUMMY, I),
+   MAKE_INTRINSIC_2("_nc_inq_var_chunking", sl_nc_inq_var_chunking, V, NCID_DUMMY, NCID_VAR_DUMMY),
+   MAKE_INTRINSIC_3("_nc_def_var_fill", sl_nc_def_var_fill, V, NCID_DUMMY, NCID_VAR_DUMMY, I),
+   MAKE_INTRINSIC_2("_nc_inq_var_fill", sl_nc_inq_var_fill, V, NCID_DUMMY, NCID_VAR_DUMMY),
+
+   MAKE_INTRINSIC_5("_nc_def_var_deflate", sl_nc_def_var_deflate, V, NCID_DUMMY, NCID_VAR_DUMMY, I, I, I),
+   MAKE_INTRINSIC_2("_nc_inq_var_deflate", sl_nc_inq_var_deflate, V, NCID_DUMMY, NCID_VAR_DUMMY),
+
+   MAKE_INTRINSIC_5("_nc_set_var_chunk_cache", sl_nc_set_var_chunk_cache, V, NCID_DUMMY, NCID_VAR_DUMMY, _SL_SIZE_T_TYPE, _SL_SIZE_T_TYPE, SLANG_FLOAT_TYPE),
+   MAKE_INTRINSIC_2("_nc_get_var_chunk_cache", sl_nc_get_var_chunk_cache, V, NCID_DUMMY, NCID_VAR_DUMMY),
+
    SLANG_END_INTRIN_FUN_TABLE
 };
 
@@ -3117,6 +3382,14 @@ static SLang_IConstant_Type Module_IConstants [] =
 #ifdef NC_INMEMORY
    MAKE_ICONSTANT("NC_INMEMORY",NC_INMEMORY),
 #endif
+   MAKE_ICONSTANT("NC_CHUNKED", NC_CHUNKED),
+   MAKE_ICONSTANT("NC_CONTIGUOUS", NC_CONTIGUOUS),
+#ifdef NC_COMPACT
+   MAKE_ICONSTANT("NC_COMPACT", NC_COMPACT),
+#endif
+
+   MAKE_ICONSTANT("NC_FILL", NC_FILL),
+   MAKE_ICONSTANT("NC_NOFILL", NC_NOFILL),
    MAKE_ICONSTANT("_netcdf_module_version", MODULE_VERSION_NUMBER),
    SLANG_END_ICONST_TABLE
 };

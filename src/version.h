@@ -1,4 +1,4 @@
-#define MODULE_VERSION_STRING   "pre0.2.0-7"
+#define MODULE_VERSION_STRING   "pre0.2.0-8"
 #define MODULE_VERSION_NUMBER   200
 #define MODULE_VERSION_NUMSTR   "0.2.0"
 

@@ -9,3 +9,4 @@ Changes since 0.1.0
     4.6.1).
 6.  Added put_slices method and writing compound types
 7.  Added support for nested compound objects
+8.  Added support for chunking, fill, deflate, and cache values
