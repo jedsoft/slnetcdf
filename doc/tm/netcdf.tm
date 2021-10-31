@@ -80,12 +80,6 @@ low-level interface was designed mainly to support the high-level
 interface.  As such, only the high-level interface is described in
 this document.
 
-The module supports the following netCDF features:
-\begin{itemize}
-\item Attributes
-\item Groups
-\end{itemize}
-
 \chapter{Getting Started}
 
 Before the module can be used it must first be loaded into the
@@ -122,16 +116,21 @@ Usage: nc = netcdf_open (file, mode [; qualifiers]);
 Qualifiers:
  noclobber, share, lock
 Methods:
-  .get       Read a netCDF variable
-  .put       Write to a netCDF variable
-  .def_dim   Define a netCDF dimension
-  .def_var   Define a netCDF variable
-  .put_att   Write a netCDF attribute
-  .get_att   Read a netCDF attribute
-  .def_grp   Define a netCDF group
-  .group     Open a netCDF group
-  .info      Print some information about the object
-  .close     Close the underlying netCDF file
+  .get                 Read a netCDF variable
+  .put                 Write to a netCDF variable
+  .get_slices          Read slices from a netCDF variable
+  .put_slices          Write slices to a netCDF variable
+  .def_dim             Define a netCDF dimension
+  .def_var             Define a netCDF variable
+  .def_compound        Define a netCDF compound
+  .put_att             Write a netCDF attribute
+  .get_att             Read a netCDF attribute
+  .def_grp             Define a netCDF group
+  .group               Open a netCDF group
+  .subgrps             Get the subgroups of the current group
+  .inq_var_storage     Get cache, compression, and chunking info
+  .info                Print some information about the object
+  .close               Close the underlying netCDF file
 #v-
 Similarly, calling one of the methods with the incorrect number of
 arguments will display a usage for the method, e.g.,
@@ -160,7 +159,7 @@ supports a much richer variety of indexing.
 
 To illustrate this, consider the task of clipping an array in a netCDF
 file such that array values less than a threshold value are set to the
-threshold value.  Suppose the array is has the name \exmp{"images"}
+threshold value.  Suppose the array has the name \exmp{"images"}
 and represents a set of 100 2d images 2048x2048 images and stored as a
 100x2048x2048 cube of 32 bit floating point values.  Values less than
 0 are to be set to 0.  To carry out the clipping operation, it is
@@ -176,7 +175,7 @@ clipping operation, and then write out the array:
 #v-
 Note that this involves writing the entire array back to the netCDF
 file, regardless of whether the values have changed or not.  Ideally
-one would prefer to only update those values in the file that are
+one would prefer to update only those values in the file that are
 below the threshold.  However, netCDF does not have an equivalent of
 the \exmp{images[i] = 0} statement used above.
 
@@ -186,12 +185,17 @@ consider setting the values of every other element of a 100 element
 1-d array X to 0.  This is something that netCDF supports via its
 ``start-count-stride'' indexing paradigm:
 #v+
-  zeros = Int_Type[50];    % An array of 50 0s
+  zeros = Int_Type[50];    % An array of 50 zeros
   nc.put("X", zeros, [0], [50], [2]);
 #v-
 However, setting the 1st, 3rd, and 9th element of X to 0 is not
 possible since the indices 1, 3, and 9 cannot be specified in the form
 of a single ``start-count-stride'' triplet.
+
+To simplify the use of the start-count-stride indexing paradigm, the
+module includes the methods \exmp{.get_slices} and \exmp{.put_slices},
+that are simpler to use and allow for more flexibility.  The examples
+given below illustrate both approaches.
 
 As indicated above, netCDF lacks support for random indexing of
 arrays.  Although the netCDF library supports reading/writing a single
@@ -217,7 +221,7 @@ auxillary array (\exmp{zeros} in this case), which could be
 arbitrarily large.  Moreover, as discussed in the next section,
 interpreter may not support such a large array.  For this reason, it
 would be better to use a much smaller auxillary array and write it in
-slices.  For example,
+slices.  For example, using the start-count-stride paradigm:
 #v+
    zeros = Int_Type[1024, 1024];
    start = [0, 0, 0];
@@ -228,28 +232,34 @@ slices.  For example,
         nc.put ("X", zeros, start, count);
      }
 #v-
+Or more concisely using the \exmp{.put_slices} method:
+{.put_slices} method:
+#v+
+   nc.put_slices ("X", [0:499], 0);
+#v-
 
 Once again consider the case of a time-series sequence of images
 stored in the netCDF file as an 100x2048x2048 array of 32 bit floats.
 Suppose that the dimension coordinate of the first index is time, and
-it is desire to extract only those images capture during an interval
+it is desired to extract only those images captured during an interval
 \exmp{t0 <= t < t1}:
 #v+
    nc = netcdf_open ("images.nc", "r");
    t = nc.get ("time");
    inds = where (t0 <= t < t1);
 #v-
-Here, \exmp{inds} would be an array whose values correspond to those
+Here, \exmp{inds} would be an array whose values are equal to those
 indices of the \exmp{time} array that correspond to the desired range.
-Reading the correponding images can accomplished using the
-``start-count-stride'' netCDF method:
+Reading the correponding images can accomplished using one of the
+following:
 #v+
   images = nc.get ("images", [inds[0], 0, 0], [length(inds), 2048, 2048]);
+  images = nc.get_slices ("images", inds);
 #v-
 But suppose that each image is tagged with some additional indicator
 that one wants to filter on.  Then in this case, the index array
 \exmp{inds} will unlikely to be a simple range, and would not permit
-indexing via a ``start-count-stride'' triplet.  In this case, one 
+indexing via a ``start-count-stride'' triplet.  In this case, one
 resort to reading the images as individual slices:
 #v+
    images = Float_Type[length(inds),2048,2048];
@@ -258,12 +268,6 @@ resort to reading the images as individual slices:
         images[i,*,*] = nc.get ("images", [inds[i], 0, 0], [1, 2048, 2048]);
       }
 #v-
-Since this can be cumbersome, the module includes a netCDF object
-method called \exmp{.get_slices} that faciliates this type of operation:
-#v+
-   images = nc.get_slices ("images", inds);
-#v-
-
 \sect{\slang limitations}
 
 The main limitaton that the user needs to be aware is that netCDF
@@ -283,16 +287,20 @@ dimensions that have some physical meaning.  For example, this data
 cube might represent a 2048x2048 image of a scene observed 1024 times.
 In this scenario, it might be more natural to read one image at a time
 from the cube and process it.  For example, the mean of the images
-may be compute using:
+may be computed using:
 #v+
     nt = 1024, nx = 2048, ny = 2048;
     avg_image = Double_Type[nx, ny];
     for (i = 0; i < nt; i++)
       {
-         avg_image += nc.get ("cube", [i,0,0], [1, nx, ny]);
+         % avg_image += nc.get ("cube", [i,0,0], [1, nx, ny]);
+         avg_image += nc.get_slices ("cube", i);
       }
     avg_image /= nt;
 #v-
+Note that the \exmp{.get_slices} method was preferred here instead of
+the more cumbersome \exmp{.get} method with its start-count-stride
+indexing.
 
 \chapter{NetCDF Module Function Reference}
 #i netcdffuns.tm

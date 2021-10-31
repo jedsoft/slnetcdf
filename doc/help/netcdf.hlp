@@ -1,7 +1,7 @@
 netcdf_open
 
  SYNOPSIS
-  Create a new  file or open an existing one
+  Create a new file or open an existing one
 
  USAGE
   nc = netcdf_open (filename, mode)
@@ -18,18 +18,24 @@ netcdf_open
   Upon success, a netCDF object is returned.  Upon failure, a exception
   will be thrown.
 
-  The supported methods include:
+  The supported netCDF object methods include:
 
-  .def_dim  : Define a netCDF dimension
-  .def_var  : Define a netCDF variable
-  .def_grp  : Define a netCDF group
-  .put      : Write data to netCDF variable
-  .get      : Read data from a netCDF variable
-  .put_att  : Write an netCDF attribute
-  .get_att  : Read a netCDF attribute
-  .group    : Instantiate a netCDF object corresponding to a specified group
-  .info     : Print some information about the netCDF object
-  .close    : Close a netCDF file
+  .def_dim          Define a netCDF dimension
+  .def_var          Define a netCDF variable
+  .def_grp          Define a netCDF group
+  .def_compound     Define a netCDF compound
+  .put              Write data to a netCDF variable
+  .get              Read data from a netCDF variable
+  .get_slices       Read slices from a netCDF variable
+  .put_slices       Write slices to a netCDF variable
+  .put_att          Write a netCDF attribute
+  .get_att          Read a netCDF attribute
+  .group            Instantiate a netCDF object for a group
+  .def_grp          Define a netCDF group
+  .subgrps          Get the subgroups of the current group\n\
+  .inq_var_storage  Get cache, compression, and chunking info
+  .info             Print some information about the netCDF object
+  .close            Close a netCDF file
 
   See the documentation for the specific methods for additional
   information about them.
@@ -66,13 +72,14 @@ netcdf.def_var
   Define a new netCDF variable
 
  USAGE
-  nc.def_var (String_Type varname, DataType_Type type, Array_Type dim_names)
+  nc.def_var (varname, type, dim_names)
 
  DESCRIPTION
- This function is used to define a new netCDF variable with name
- `vname', and whose type and dimensions are given by the
+ This function is used to define a new netCDF variable with name given
+ by the `varname' parameter, and whose type and dimensions are given by the
  `type' and `dim_names' parameters, respectively.  The
- `type' parameter must be one of the following values:
+ `type' parameter may be the name of a compound type, or one one
+ be one of the following values:
 
    Char_Type (Signed 8-bit integer)
    UChar_Type (Unsigned 8-bit integer)
@@ -89,6 +96,18 @@ netcdf.def_var
  The `dim_names' array is a 1-d array of previously defined
  dimension names.
 
+ QUALIFIERS
+ The storage properties of the variable may be specified by qualifiers.
+  ; storage=NC_CONTIGUOUS|NC_CHUNKED|NC_COMPACT: Storage type
+  ; chunking=array: 1-d array of chunk sizes
+  ; fill=value: Fill value
+  ; cache_size=int: Cache size in bytes
+  ; cache_nelems=int: Number of chunk slots
+  ; cache_preemp=float: Preemption (a value from 0.0 to 1.0)
+  ; deflate=0|1: 1 to enable compression, 0 to disable
+  ; deflate_level=0-9: 0 = no compression, 9 = maximum compression
+  ; deflate_shuffle=0|1: 0 : No shuffle, 1: Enable shuffling
+
  EXAMPLE
  The following example results in the creation of a netCDF array 20x30
  array of 32 bit floating point values.
@@ -96,6 +115,15 @@ netcdf.def_var
     nc.def_dim ("x", 20);
     nc.def_dim ("y", 30);
     nc.def_var ("xy_image", Float_Type, ["x", "y"]);
+
+ This example defines a 512x1024x2048 16-bit integer array with chunking and
+ compression enabled.
+
+    nc.def_dim("frames", 512);
+    nc.def_dim("xtrack", 1024);
+    nc.def_dim("wavelength", 2048);
+    nc.def_var("images", Int16_Type, ["frames", "xtrack", "wavelength"]
+               ; chunking=[11,156,305], deflate_level=1);
 
 
  SEE ALSO
@@ -111,11 +139,11 @@ netcdf.def_dim
   Create a netCDF dimension variable
 
  USAGE
-  nc.def_dim (String_Type dimname, Int_Type len | Array_Type grid)
+  nc.def_dim (dimname, len | grid)
 
  DESCRIPTION
-  The `.def_dim' method creates a netCDF dimension named with the
-  name give by the `dimname' parameter.  The second parameter
+  The `.def_dim' method creates a netCDF dimension whose
+  name is specified by the `dimname' parameter.  The second parameter
   specifies the length of the dimension.  It may be either an integer
   or an array of values.  If the second parameter is an integer, then
   the dimension will have the size given by the integer.  A dimension
@@ -142,7 +170,7 @@ netcdf.def_dim
    nc.def_var("position", ["time", "space"]);
 
   Here, the time dimension has been defined to be unlimited, and the
-  space dimension has been define to be a length of 3, corresponding
+  space dimension has been defined to have a length of 3, corresponding
   to the 3 spatial dimensions.
 
  NOTES
@@ -165,14 +193,407 @@ netcdf.def_grp
   ncgrp = nc.def_grp (String_Type grpname)
 
  DESCRIPTION
-  This method create a new group of the specified name and returns an
+  This method creates a new group of the specified name and returns an
   object representing it.  All operations on the group should take
   place via the methods defined by object.
 
- EXAMPLE
-  Suppose that a netCDF file has a dimension called "longitude"
-
  SEE ALSO
   netcdf_open, netcdf.group
+
+--------------------------------------------------------------
+
+netcdf.def_compound
+
+ SYNOPSIS
+  Define a netCDF compound
+
+ USAGE
+  nc.def_compound(cmpname, cmpdef)
+
+ DESCRIPTION
+  This method is used to define a new compound object with the type
+  name given by the `cmpname' parameter.  The compound field
+  names and the corresponding data types and dimensions are specified
+  by the `cmpdef' parameter in the form of a structure.  Each
+  field name of the structure gives the corresponding compound field
+  name.  The value of the field specifies the data type and dimensions
+  of the corresponding compound field.  This value must be specified
+  as either a data type array, or a list giving the data type and
+  dimensions:
+
+     datatype [dim0, dim1,...]
+     {datatype, dim0, dim1, ...}
+
+  The latter form using the list is the preferred form and is required
+  for compound types with array-valued fields.  This
+  is illustrated in the second example below.
+
+ EXAMPLE
+  Suppose that it is desired to store 100 samples of a time-dependent
+  complex-valued voltage V in a netCDF file as two variables:
+  `timestamp' and `complex_voltage'.  Since netCDF does not
+  support complex variables, this example creates compound type that
+  represents a complex variable.
+
+    define store_voltage_samples (file, t, v)
+    {
+       % v is an array of complex voltage samples
+       % t is an array of time values
+       variable i, nsamples = length(v);
+       variable v_real = Real(v), v_imag = Imag(v);
+
+       variable nc = netcdf_open (file, "c");
+       nc.def_compound ("complex_t",
+                        struct {re=Double_Type,im=Double_Type});
+       nc.def_dim ("time", nsamples);
+       nc.def_var ("timestamp", Double_Type, ["time"]);
+       nc.def_var ("complex_voltage", "complex_t", ["time"]);
+
+       variable complex_voltages = Struct_Type[nsamples];
+       for (i = 0; i < nsamples; i++)
+          {
+             complex_voltages[i]
+               = struct { re = v_real[i], im = v_imag[i] };
+          }
+
+        nc.put ("timestamp", t);
+        nc.put ("complex_voltage", complex_voltages);
+        nc.close ();
+    }
+
+
+  Here is an alternative that stores all the voltage samples in a
+  single scalar variable called `samples' that has two fields:
+  `timestamp' and `voltage'.
+
+    define store_voltage_samples (file, t, v)
+    {
+       % v is an array of complex voltage samples
+       % t is an array of time values
+       variable i, nsamples = length(v);
+       variable v_real = Real(v), v_imag = Imag(v);
+
+       variable nc = netcdf_open (file, "c");
+       nc.def_compound ("complex_t",
+                        struct {re=Double_Type,im=Double_Type});
+       nc.def_compound ("sample_t",
+           struct {
+              timestamp = {Double_Type, nsamples},
+              voltage = {"complex_t", nsamples}
+           });
+
+       nc.def_var ("samples", "sample_t", NULL);
+
+       variable complex_voltages = Struct_Type[nsamples];
+       for (i = 0; i < nsamples; i++)
+          {
+             complex_voltages[i]
+               = struct { re = v_real[i], im = v_imag[i] };
+          }
+        variable samples = struct
+            { timestamp = t, voltage = complex_voltages };
+        nc.put ("samples", samples);
+        nc.close ();
+    }
+
+
+ SEE ALSO
+  netcdf.def_var, netcdf.def_dim, netcdf.put
+
+--------------------------------------------------------------
+
+netcdf.put
+
+ SYNOPSIS
+  Write to a netCDF variable
+
+ USAGE
+  nc.put (varname, datavalues [,start [,count [,stride]]])
+
+ DESCRIPTION
+  The `.put' method may be used to write one or more data values
+  to the netCDF variable whose name is given by `varname'.  The
+  optional parameters (`start', `count', and `stride')
+  may be used to specify where the data values are to be written.
+
+ NOTES
+  The `.put_slices' method may be easier to use when writing data
+  to one or more subarrays of a netCDF array.
+
+ SEE ALSO
+  netcdf.get, netcdf.put_slices, netcdf.def_var, netcdf.put_att
+
+--------------------------------------------------------------
+
+netcdf.get
+
+ SYNOPSIS
+  Read values from a netCDF variable
+
+ USAGE
+  vals = nc.get (varname [,start [,count [,stride]]])
+
+ DESCRIPTION
+  The `.get' method may be use to read one or more values from
+  the netCDF variable whose name is given by `varname'.  The
+  optional paramters (`start', `count', and `stride')
+  may be used to specify that the data values are to be read from
+  the specified subset of the netCDF variable.
+
+ NOTES
+  The `.get_slices' method may be easier to use when reading data
+  from one or more subarrays of a netCDF array.
+
+ SEE ALSO
+  netcdf.put, netcdf.get_slices, netcdf.def_var, netcdf.get_att
+
+--------------------------------------------------------------
+
+netcdf.get_slices
+
+ SYNOPSIS
+  Read a specified sub-array of a netCDF variable
+
+ USAGE
+  val = nc.get_slices (varname, i [,j ...] ; qualifiers)
+
+ DESCRIPTION
+ The `.get_slices' method reads a sub-array from the netcdf
+ variable whose name is given by `varname'.  The sub-array is
+ defined by one or more indices, `i, j...', whose usage is best
+ described by some examples.  If `A' represents the elements of a
+ multi-dimensional variable named `"A"', then:
+
+   X = nc.get_slices ("A", i);                 % ==> X = A[i,*,*,...]
+   X = nc.get_slices ("A", i; dims=1);         % ==> X = A[*,i,*,...]
+   X = nc.get_slices ("A", i, j);              % ==> X = A[i,j,*,...]
+   X = nc.get_slices ("A", i, j; dims=[2,0]);  % ==> X = A[j,*,i,...]
+
+ The indices `i, j, ...' may be index-arrays or simple scalars, e.g.,
+
+   X = nc.get_slices ("A", [3:5], 4);          % ==> X = A[[3:5],4,*,...]
+
+
+ QUALIFIERS
+  ; dims=[d0,...]: Specifies the dimensions that correspond to
+     the index variables.  The default is [0,1,...]
+
+ SEE ALSO
+  netcdf.get, netcdf.put_slices
+
+--------------------------------------------------------------
+
+netcdf.put_slices
+
+ SYNOPSIS
+  Write values to a specified sub-array of a netCDF variable
+
+ USAGE
+  nc.put_slices (varname, i [,j ...], X ; qualifiers)
+
+ DESCRIPTION
+ The `.put_slices' method writes set of values `X' to a
+ specified sub-array of the netcdf variable whose name is given by
+ `varname'.  The sub-array is defined by one or more indices,
+ `i, j...', whose usage is best described by some examples.  If
+ `A' represents the elements of a multi-dimensional netCDF
+ variable named `"A"', and X repesents the array of values to be
+ written, then:
+
+   nc.put_slices ("A", i, X);                  % ==> A[i,*,*,...] = X
+   nc.put_slices ("A", i, X; dims=1);          % ==> A[*,i,*,...] = X
+   nc.put_slices ("A", i, j, X);               % ==> A[i,j,*,...] = X
+   nc.put_slices ("A", i, j, X; dims=[2,0]);   % ==> A[j,*,i,...] = X
+
+ The indices `i, j, ...' may be index-arrays or simple scalars, e.g.,
+
+   nc.put_slices ("A", [3:5], 4, X);           % ==> A[[3:5],4,*,...] = X
+
+
+ QUALIFIERS
+  ; dims=[d0,...]: Specifies the dimensions that correspond to
+the index variables
+
+ SEE ALSO
+  netcdf.put, netcdf.get_slices
+
+--------------------------------------------------------------
+
+netcdf.put_att
+
+ SYNOPSIS
+  Write a netCDF attribute
+
+ USAGE
+  nc.put_att ([varname,] attname, value)
+
+ DESCRIPTION
+  This function may be used to write a value to a netCDF attribute.
+  If the optional paramter `varname' is given, then it specifies
+  the name of the variable whose attribute is to be written.
+  Otherwise, the attribute will be written to the group represented by
+  the netCDF object `nc'.
+
+  If the value is an instance of a netCDF compound type, then the
+  `dtype' qualifier must be used to specifiy the compound type.
+
+ QUALIFIERS
+  ; dtype=type: The data type of the attribute
+
+ EXAMPLE
+  This example writes a complex value to a global attribute named
+  `impedance' as a netCDF compound.
+
+   nc.def_compound ("complex_t", struct {re=Double_Type, im=Double_Type});
+   z = struct {re = 3.0, im = 4.0};
+   nc.put_att ("impedance", value; dtype="complex_t");
+
+
+ SEE ALSO
+  netcdf.get_att, netcdf.put
+
+--------------------------------------------------------------
+
+netcdf.get_att
+
+ SYNOPSIS
+  Get the value of a netCDF attribute
+
+ USAGE
+  value = nc.get_att ([varname,] attname}
+
+ DESCRIPTION
+  This function gets the value of the attribute whose name is given by
+  `attname'.  If present, `varname' specifies the name of
+  the variable associated with the attribute.  Otherwise the attribute
+  is that of the group associated with the netCDF object `nc'
+
+ SEE ALSO
+  netcdf.put_att, netcdf.get, netcdf.get_slices
+
+--------------------------------------------------------------
+
+netcdf.group
+
+ SYNOPSIS
+  Instantiate a netCDF object for a specified group
+
+ USAGE
+  ncgrp = nc.group (group_name)
+
+ DESCRIPTION
+  The function returns a netCDF object for the group whose name is
+  given by `group_name'.
+
+ EXAMPLE
+  Suppose that `"images"' is a netCDF subgroup of the object
+  represented by `nc'.  Then an attribute {"scene_id"} may be
+  created in the subgroup via
+
+    nc_images = nc.group("images");
+    nc_images.put_att ("scene_id", 7734);
+
+
+ NOTES
+  This function assumes that the specified group already exists.  To
+  create a new group, use the `.def_grp' function.
+
+ SEE ALSO
+  netcdf_open, netcdf.def_grp, netcdf.subgrps
+
+--------------------------------------------------------------
+
+netcdf.subgrps
+
+ SYNOPSIS
+  Get the subgroups associated with a netCDF object
+
+ USAGE
+  subgroup_names = nc.subgrps ()
+
+ DESCRIPTION
+  This function returns the names of the subgroups associated with the
+  netCDF object `nc'
+
+ SEE ALSO
+  netcdf.group, netcdf.def_grp
+
+--------------------------------------------------------------
+
+netcdf.inq_var_storage
+
+ SYNOPSIS
+  Get information about how a variable is stored
+
+ USAGE
+  s = nc.inq_var_storage(varname)
+
+ DESCRIPTION
+  This function returns a structure that provides information about
+  how the specified variable is stored.  This includes
+  compression and chunking information, as well as information about
+  the cache, and the fill value.  The field names include:
+
+    fill            : fill-value
+    storage         : NC_CONTIGUOUS (no chunking), NC_CHUNKED, NC_COMPACT
+    chunking        : 1-d array of chunk sizes
+    cache_size      : size of the cache in bytes
+    cache_nelems    : The number of chunk slots
+    cache_preemp    : Cache preemption value
+    deflate         : 1 if compression is enabled, 0 if not
+    deflate_level   : compression level (0-9)
+    deflate_shuffle : 1 if shuffling is enabled, 0 if not
+
+
+ NOTES
+  These values can be set as qualifiers to the `def_var' method.
+
+  This function is a wrapper around the netCDF API functions
+  `nc_inq_var_chunking', `nc_get_var_chunk_cache',
+  `nc_inq_var_deflate', and `nc_inq_var_fill'.  For more
+  information, see the netCDF documentation.
+
+ SEE ALSO
+  netcdf.def_var
+
+--------------------------------------------------------------
+
+netcdf.info
+
+ SYNOPSIS
+  List variables and attributes of a netCDF object
+
+ USAGE
+  nc.info()
+
+ DESCRIPTION
+ The `.info' method prints information about the netCDF object.
+ The information includes the name of the group, the dimensions, group
+ attributes, variables and their attributes, and subgroups of the
+ netCDF object.
+
+ SEE ALSO
+  netcdf.subgrps
+
+--------------------------------------------------------------
+
+netcdf.close
+
+ SYNOPSIS
+  Close the underlying netCDF file
+
+ USAGE
+  nc.close ()
+
+ DESCRIPTION
+ This function may be used to close the underlying netCDF file.
+
+ NOTES
+ The interpreter will silently close the file when all references to it have
+ gone out of scope.  Nevertheless it is always good practice to
+ explicitly call the `.close' method.
+
+ SEE ALSO
+  netcdf_open
 
 --------------------------------------------------------------

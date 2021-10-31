@@ -54,7 +54,7 @@ private define netcdf_put ()
    else
      {
 	_pop_n (_NARGS);
-	usage ("<ncobj>.put (varname, data, [start, [count [,stride]]])");
+	usage ("<ncobj>.put (varname, data [,start [,count [,stride]]])");
      }
 
    variable varid = get_varid (ncobj, varname);
@@ -192,7 +192,7 @@ private define adjust_fixed_indices (var_shape, fixed_index_list, fixed_dims)
 private define netcdf_get_slices ()
 {
    if (_NARGS < 3)
-     usage ("<ncobj>.get_slices(varname, i [,j ...] ; dims=[dim_i, ...]");
+     usage ("value = <ncobj>.get_slices(varname, i [,j ...] ; dims=[dim_i, ...]");
 
    % The comments below are given in the context of an array A whose shape
    % is [n0, n1, n2, n3] and it is desired to get the subarray
@@ -286,6 +286,13 @@ private define netcdf_get_slices ()
    return outdata;
 }
 
+private define promote_scalar_to_array (x, dims)
+{
+   variable a = @Array_Type(typeof(x), dims);
+   a[*] = x;
+   return a;
+}
+
 private define netcdf_put_slices ()
 {
    if (_NARGS < 4)
@@ -310,10 +317,17 @@ private define netcdf_put_slices ()
 	throw InvalidParmError, "Expected the dims qualifier to have a length equal to the number of slice indices";
      }
 
+   variable is_scalar = (typeof (data) != Array_Type);
+   variable data_array = data;
+
    (fixed_index_list, fixed_dims) = adjust_fixed_indices (var_shape, fixed_index_list, fixed_dims);
    nfixed_dims = length (fixed_dims);
    if (nfixed_dims == 0)
-     return ncobj.put (varname, data);
+     {
+	if (is_scalar)
+	  data_array = promote_scalar_to_array (data, var_shape);
+	return ncobj.put (varname, __tmp(data_array));
+     }
 
    variable in_shape = @var_shape;
    variable i, j, idx;
@@ -337,8 +351,9 @@ private define netcdf_put_slices ()
    % If only a single slice is to be put, do that now and return.
    if (all(counter_max == 0))
      {
+	if (is_scalar) data_array = promote_scalar_to_array (data, count);
 	start[fixed_dims] = [__push_list (fixed_index_list)];
-	_nc_put_vars (start, count, NULL, data, ncid, varid);
+	_nc_put_vars (start, count, NULL, data_array, ncid, varid);
 	return;
      }
    variable data_index_list = {};
@@ -350,7 +365,7 @@ private define netcdf_put_slices ()
    variable data_shape = array_shape (data);
    try
      {
-	reshape (data, in_shape);
+	ifnot (is_scalar) reshape (data, in_shape);
 	do
 	  {
 	     _for i (0, nfixed_dims-1, 1)
@@ -361,7 +376,11 @@ private define netcdf_put_slices ()
 		  start[idx] = fixed_index_list[i][j];
 	       }
 	     % start = [0, i1[counter[0]], i2[counter[1]], 0];
-	     _nc_put_vars (start, count, NULL, data[__push_list(data_index_list)], ncid, varid);
+	     if (is_scalar)
+	       data_array = promote_scalar_to_array (data, count);
+	     else
+	       data_array = data[__push_list(data_index_list)];
+	     _nc_put_vars (start, count, NULL, data_array, ncid, varid);
 	  }
 	while (inc_counter (counter, counter_max, nfixed_dims));
      }
@@ -674,6 +693,7 @@ private define netcdf_def_compound ()
    shared_info.user_types[name] = dtype;
 }
 
+% TODO: return this information in the form of a json-like structure
 private define netcdf_info ()
 {
    if (_NARGS != 1)
@@ -978,16 +998,21 @@ nc = netcdf_open (file, mode [; qualifiers]);\n\
 Qualifiers:\n\
  noclobber, share, lock\n\
 Methods:\n\
-  .get       Read a netCDF variable\n\
-  .put       Write to a netCDF variable\n\
-  .def_dim   Define a netCDF dimension\n\
-  .def_var   Define a netCDF variable\n\
-  .put_att   Write a netCDF attribute\n\
-  .get_att   Read a netCDF attribute\n\
-  .def_grp   Define a netCDF group\n\
-  .group     Open a netCDF group\n\
-  .info      Print some information about the object\n\
-  .close     Close the underlying netCDF file\n\
+  .get                 Read a netCDF variable\n\
+  .put                 Write to a netCDF variable\n\
+  .get_slices          Read slices from a netCDF variable\n\
+  .put_slices          Write slices to a netCDF variable\n\
+  .def_dim             Define a netCDF dimension\n\
+  .def_var             Define a netCDF variable\n\
+  .def_compound        Define a netCDF compound\n\
+  .put_att             Write a netCDF attribute\n\
+  .get_att             Read a netCDF attribute\n\
+  .def_grp             Define a netCDF group\n\
+  .group               Open a netCDF group\n\
+  .subgrps             Get the subgroups of the current group\n\
+  .inq_var_storage     Get cache, compression, and chunking info\n\
+  .info                Print some information about the object\n\
+  .close               Close the underlying netCDF file\n\
 "
 	      );
      }

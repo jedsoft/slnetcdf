@@ -65,7 +65,12 @@ private define test_put_slices (file, data, tgrid, index_list)
 	list_append (index_args, idx);
      }
 
-   variable out_data = data[__push_list(index_list)];
+   variable out_data;
+   if (typeof(data) == Array_Type)
+     out_data = data[__push_list(index_list)];
+   else
+     out_data = data;
+
    nc.put_slices ("txyz", __push_list (index_args), out_data; dims=dims);
    nc.close ();
 
@@ -73,7 +78,14 @@ private define test_put_slices (file, data, tgrid, index_list)
    variable in_data = nc.get_slices ("txyz", __push_list(index_args); dims=dims);
    nc.close ();
 
-   ifnot (_eqs (in_data, out_data))
+   if (typeof (data) != Array_Type)
+     {
+	ifnot (all (in_data == data))
+	  {
+	     () = fprintf (stderr, "test_put_slices failed with a scalar");
+	  }
+     }
+   else ifnot (_eqs (in_data, out_data))
      {
 	() = fprintf (stderr, "test_put_slices failed");
      }
@@ -121,6 +133,8 @@ define slsh_main ()
    test_put_slices (file, data, tgrid, {[*], [*], [*], [0:10]});
    test_put_slices (file, data, tgrid, {[*], 0, [*], 1});
    test_put_slices (file, data, tgrid, {0, 0, 0, 1});
+
+   test_put_slices (file, 77, tgrid, {0, [3:5], [1:2], [0:10]});
 
    () = remove (file);
 }

@@ -10,3 +10,5 @@ Changes since 0.1.0
 6.  Added put_slices method and writing compound types
 7.  Added support for nested compound objects
 8.  Added support for chunking, fill, deflate, and cache values
+9.  The .put_slices method will convert a scalar value to an array
+    if necessary, further simplifying its usage.

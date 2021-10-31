@@ -2925,6 +2925,7 @@ static void sl_nc_inq_dimids (NCid_Type *nc, int *include_parentsp)
      (void) SLang_push_array (at, 1);
 }
 
+#if 0
 /* Upon success, if *ntypesp is 0, then **typeidp will be NULL */
 static int get_typeids (int ncid, int **typeidsp, int *ntypesp)
 {
@@ -2957,7 +2958,7 @@ static int get_typeids (int ncid, int **typeidsp, int *ntypesp)
    *typeidsp = typeids;
    return 0;
 }
-
+#endif
 
 /* Compound Types */
 
@@ -3264,14 +3265,14 @@ static void sl_nc_def_compound (NCid_Type *nc, const char *name)
 
 	at = ((SLang_Array_Type **)at_dims->data)[i];   /* not NULL per above loop */
 	if (at->data_type == SLANG_INT_TYPE)
-	  status = nc_insert_array_compound (ncid, comp_xtype, field_names[i], offsets[i], xtypes[i], at->num_dims, (int *)at->data);
+	  status = nc_insert_array_compound (ncid, comp_xtype, field_names[i], offsets[i], xtypes[i], at->num_elements, (int *)at->data);
 	else
 	  {
 	     if ((-1 == SLang_push_array (at, 0))
 		 || (-1 == SLang_pop_array_of_type (&at, SLANG_INT_TYPE)))
 	       goto free_and_return;
 
-	     status = nc_insert_array_compound (ncid, comp_xtype, field_names[i], offsets[i], xtypes[i], at->num_dims, (int *)at->data);
+	     status = nc_insert_array_compound (ncid, comp_xtype, field_names[i], offsets[i], xtypes[i], at->num_elements, (int *)at->data);
 	     SLang_free_array (at);
 	  }
 	if (status != NC_NOERR)
