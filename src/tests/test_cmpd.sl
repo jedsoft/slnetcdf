@@ -130,10 +130,21 @@ define read_file (file)
 	counter++;
      }
 
-   variable foo_in = nc.get_att ("crop_harvest", "crop_harvest_attr");
-   ifnot (_eqs (foo, foo_in))
+   try
      {
-	() = fprintf (stderr, "Failed to read compound attribute");
+	variable foo_in = nc.get_att ("crop_harvest", "crop_harvest_attr");
+	ifnot (_eqs (foo, foo_in))
+	  {
+	     () = fprintf (stderr, "Failed to read compound attributes");
+	     exit (1);
+	  }
+     }
+   catch AnyError:
+     {
+	() = fprintf (stderr, "\n\
+*** WARNING: Some versions of netcdf have troubles read compound attributes.\n\
+             Your version appears to be one of those: %S\n\n",
+		      _nc_inq_libvers ());
      }
 
    nc.close ();

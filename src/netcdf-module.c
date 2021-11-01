@@ -3295,6 +3295,10 @@ free_and_return:
    SLang_free_array (at_dims);
 }
 
+static void sl_nc_inq_libvers (void)
+{
+   (void) SLang_push_string ((char *)nc_inq_libvers());
+}
 
 #define NCID_DUMMY ((SLtype)-1)
 #define NCID_VAR_DUMMY ((SLtype)-2)
@@ -3337,6 +3341,7 @@ static SLang_Intrin_Fun_Type Module_Intrinsics [] =
    MAKE_INTRINSIC_2("_nc_get_global_att", sl_nc_get_global_att, V, NCID_DUMMY, S),
    /* MAKE_INTRINSIC_2("_nc_inq_varatts", sl_nc_inq_varatts, V, NCID_DUMMY, S), */
 
+   MAKE_INTRINSIC_0("_nc_inq_libvers", sl_nc_inq_libvers, V),
    MAKE_INTRINSIC_2("_nc_def_grp", sl_nc_def_grp, V, NCID_DUMMY, S),
    MAKE_INTRINSIC_2("_nc_inq_grp_ncid", sl_nc_inq_grp_ncid, V, NCID_DUMMY, S),
    MAKE_INTRINSIC_1("_nc_inq_grps", sl_nc_inq_grps, V, NCID_DUMMY),
