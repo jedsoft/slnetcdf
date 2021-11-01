@@ -1,14 +1,23 @@
-import ("netcdf");
+% Copyright (C) 2021 John E. Davis <jed@jedsoft.org>
+%
+% This file is part of the S-Lang netcdf module
+%
+% The S-Lang netcdf module is free software: you can redistribute it
+% and/or modify it under the terms of the GNU General Public License
+% as published by the Free Software Foundation, either version 3 of
+% the License, or (at your option) any later version.
+%
+% The S-Lang netcdf module is distributed in the hope that it will be
+% useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+% of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+% General Public License for more details.
+%
+% You should have received a copy of the GNU General Public License
+% along with the S-Lang netcdf module.  If not, see
+% <https://www.gnu.org/licenses/>.
+%
 
-% netCDF-4/HDF5 data model:
-%
-%    Contains 1 or more hierarchically related groups.  The top-level
-%    group is anonymous ("root")
-%
-%    Each group has its own dimensions, variables, and attributes.
-%    The scope of a dimension object includes all of the groups
-%    subgroups.
-%
+import ("netcdf");
 
 private define get_varid (ncobj, varname)
 {
