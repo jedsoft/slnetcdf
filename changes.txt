@@ -2,6 +2,7 @@ Changes since 0.2.0
 1.  Added _nc_inq_libvers() to get the library version.  It appears
     that version 4.6.1 and earlier versions cannot handle nested
     compound attributes.
+2.  Updated the mkversion.sh script
 
 Changes since 0.1.0
 
